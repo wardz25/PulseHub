@@ -1,0 +1,1585 @@
+-- ╔══════════════════════════════════════════════════════════════╗
+-- ║  HACT TELUR — v0.1 (KERANGKA UI)                               ║
+-- ║  UI doang, fungsi auto-hatch/swap nyusul.                      ║
+-- ║  Tema: hitam elegan + aksen putih/abu minimalis.              ║
+-- ╚══════════════════════════════════════════════════════════════╝
+
+local Players = game:GetService("Players")
+local player = Players.LocalPlayer
+local CoreGui = game:GetService("CoreGui")
+
+local VERSION = "v3.9"
+
+-- ============ THEME ============
+local C = {
+    bg       = Color3.fromRGB(22, 22, 22),
+    panel    = Color3.fromRGB(26, 26, 26),
+    card     = Color3.fromRGB(30, 30, 30),
+    cardSel  = Color3.fromRGB(34, 34, 34),
+    input    = Color3.fromRGB(30, 30, 30),
+    border   = Color3.fromRGB(60, 60, 60),
+    borderSel= Color3.fromRGB(255, 255, 255),
+    line     = Color3.fromRGB(70, 70, 70),  -- divider lebih terang
+    text     = Color3.fromRGB(240, 240, 240),
+    textDim  = Color3.fromRGB(140, 140, 140),
+    textMute = Color3.fromRGB(100, 100, 100),
+    accent   = Color3.fromRGB(255, 255, 255),  -- putih
+    danger   = Color3.fromRGB(200, 90, 90),
+}
+local FONT     = Enum.Font.Gotham
+local FONT_B   = Enum.Font.GothamBold
+local FONT_SB  = Enum.Font.GothamMedium
+
+-- ============ UI HELPERS ============
+local function mk(class, props)
+    local o = Instance.new(class)
+    for k, v in pairs(props or {}) do o[k] = v end
+    return o
+end
+local function corner(o, r)
+    mk("UICorner", { CornerRadius = UDim.new(0, r or 8), Parent = o })
+    return o
+end
+local function stroke(o, col, th)
+    return mk("UIStroke", { Color = col or C.border, Thickness = th or 1.5, Parent = o })
+end
+local function pad(o, all)
+    mk("UIPadding", {
+        PaddingTop = UDim.new(0, all), PaddingBottom = UDim.new(0, all),
+        PaddingLeft = UDim.new(0, all), PaddingRight = UDim.new(0, all), Parent = o })
+end
+local function lbl(parent, text, size, col, xalign)
+    return mk("TextLabel", {
+        BackgroundTransparency = 1, Text = text, Font = FONT,
+        TextSize = size or 13, TextColor3 = col or C.text,
+        TextXAlignment = xalign or Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Center, Parent = parent })
+end
+
+-- ============ DETEKSI PET (memory container getgc — terbukti dari market/telur) ============
+local PetDetect = {}
+PetDetect.container = nil
+PetDetect.count = 0
+PetDetect.cache = {}            -- uuid(clean & braced) -> PetData
+PetDetect.nameCache = {}        -- uuid -> nama tipe (persisten; diisi pas pet keliatan di backpack)
+PetDetect.MUT_SHORT = {         -- map MutationType pendek -> nama enak dibaca (opsional)
+    EV = "Everchanted",
+}
+-- urutan prioritas tipe pet di picker, PER TIM (atas = paling prioritas). Sisanya nyusul.
+-- pet yg gak ada di list ditaruh paling bawah (tetep urut KG terbesar).
+PetDetect.PRIORITY = {
+    ["Reduce Tim"] = { "Mimic Octopus", "Birb", "Bald Eagle" },
+    ["Hatch Tim"]  = { "Koi", "Brontosaurus" },
+    ["Sell Tim"]   = { "Seal" },
+}
+function PetDetect.priorityRank(tabName, name)
+    local list = PetDetect.PRIORITY[tabName]
+    if list and name then
+        local low = name:lower()
+        for i, n in ipairs(list) do
+            -- substring match biar toleran prefix mutasi (mis "Everchanted Mimic Octopus")
+            if low:find(n:lower(), 1, true) then return i end
+        end
+    end
+    return 9999  -- bukan prioritas
+end
+
+-- rumus per tipe (beda-beda):
+--  Koi   : egg-back chance = 0.22 × dispW + 1  (dari tabel resmi, pakai DISPLAY weight)
+--  Seal  : rumus PET STAT  = sealPct(BaseWeight×1.1, age) (yg sebelumnya udah bener)
+--  Bronto: nyusul (nunggu tabel)
+-- mutasi boost additive (HyperHunger/Venom/UFO=30, Nightmare=22, dll).
+PetDetect.MUTATION_BOOST = {
+    Nightmare = 22, Venom = 30, UFO = 30, HyperHunger = 30, Everchanted = 30,
+    Golden = 10, Rainbow = 20, Spectral = 8, Silver = 5,
+    ["Small Toy"] = 10, ["Medium Toy"] = 20, ["Large Toy"] = 30,
+}
+PetDetect.MUT_PREFIXES = {
+    "Everchanted","Rainbow","Frozen","Inverted","Golden","Diamond","Mythical","Hexed",
+    "Ascended","Radiant","Shocked","Bloodlit","Twilight","Voidtouched","Foxfire","Aurora",
+    "Static","Stormcloud","Frost","Burnt","Lethal","Cooked","Choc","Nightmare","Venom",
+    "UFO","HyperHunger","Spectral","Silver","Corrupted",
+}
+PetDetect.MUT_CODE = {
+    EV = "Everchanted", HH = "HyperHunger", NM = "Nightmare", VN = "Venom",
+}
+function PetDetect.normMut(raw)
+    if not raw or raw == "" then return nil end
+    local s = tostring(raw)
+    if PetDetect.MUT_CODE[s] then return PetDetect.MUT_CODE[s] end
+    return (s:gsub("%s+$", ""))
+end
+local function mutBoost(mut)
+    local m = PetDetect.normMut(mut)
+    return (PetDetect.MUTATION_BOOST[m or ""] or 0) / 100
+end
+
+-- SEAL: rumus PET STAT (pakai BaseWeight × 1.1 sebagai Wh, lalu W=(Wh/11)*(age+10))
+function PetDetect.sealPct(baseWeight, age, mut)
+    if not baseWeight or not age then return 0 end
+    local Wh = baseWeight * 1.1
+    local W = (Wh / 11) * (age + 10)
+    local base = (W <= 100) and (0.05 * W + 1.0) or (6.0 + 0.0125 * (W - 100))
+    return base + mutBoost(mut)
+end
+
+-- KOI: egg-back chance = 0.22 × dispW + 1 (display weight)
+function PetDetect.koiPct(dispW, mut)
+    if not dispW then return 0 end
+    return (0.22 * dispW + 1.0) + mutBoost(mut)
+end
+
+-- BRONTO: dari tabel resmi = 0.10 × dispW + 5.25 (display weight)
+-- boost mutasi BEDA dari Koi/Seal: proporsional ke berat (bukan additive flat).
+--   selisih = (mutBoost/100) × dispW × 0.161  (terverifikasi: venom/golden/nightmare di W=32.73)
+function PetDetect.brontoPct(dispW, mut)
+    if not dispW then return 0 end
+    local base = 0.10 * dispW + 5.25
+    local m = PetDetect.normMut(mut)
+    local mb = PetDetect.MUTATION_BOOST[m or ""] or 0
+    local boost = (mb / 100) * dispW * 0.161
+    return base + boost
+end
+
+-- jumlah seal% gabungan dari pet yg DIPILIH (set uuid->true) yg namanya mengandung keyword.
+-- nama diambil dari backpack (terbukti akurat), stat (BaseWeight/Level/Mut) dari cache PetData.
+-- return: total persen, jumlah pet yg ke-hitung
+-- jumlah egg-back% gabungan dari pet yg DIPILIH (set uuid->true) yg namanya mengandung keyword.
+-- pctType: "koi"|"bronto"|"seal" buat milih rumus. dispW dari berat sesuai age.
+function PetDetect.sumPctSelected(selectedSet, keyword, pctType)
+    local sum, n = 0, 0
+    if not selectedSet then return 0, 0 end
+    local byUuid = {}
+    for _, p in ipairs(PetDetect.listBackpackPets()) do byUuid[p.uuid] = p end
+    local kw = keyword and keyword:lower() or nil
+    for uuid in pairs(selectedSet) do
+        local p = byUuid[uuid]
+        if p then
+            local nm = p.name or ""
+            local match = (not kw) or (nm:lower():find(kw, 1, true) ~= nil)
+            if match then
+                -- mutasi: dari cache MutationType, fallback prefix nama Tool
+                local pd = PetDetect.cache[uuid] or PetDetect.cache["{"..uuid.."}"]
+                local mut = pd and pd.MutationType
+                if (not mut or mut == "") and p.rawName then
+                    for _, pre in ipairs(PetDetect.MUT_PREFIXES) do
+                        if p.rawName:find(pre, 1, true) then mut = pre break end
+                    end
+                end
+                local add = 0
+                if pctType == "seal" then
+                    if pd and pd.BaseWeight and pd.Level then
+                        add = PetDetect.sealPct(pd.BaseWeight, pd.Level, mut)
+                    end
+                elseif pctType == "bronto" then
+                    add = PetDetect.brontoPct(p.dispKg, mut)
+                else  -- koi
+                    add = PetDetect.koiPct(p.dispKg, mut)
+                end
+                sum = sum + add
+                n = n + 1
+            end
+        end
+    end
+    return sum, n
+end
+
+-- cari container UUID->PetData yg berisi PET KITA (backpack + garden), bukan yg terbanyak.
+-- (DB global pet bisa 219 entri tapi GARDEN=0; container milik kita ~56 entri tapi punya garden)
+function PetDetect.findContainer()
+    if not getgc then return nil, 0 end
+    -- kumpulin uuid pet kita: dari backpack/char + dari workspace garden
+    local mine = {}
+    pcall(function()
+        local function addTool(holder)
+            if not holder then return end
+            for _, t in ipairs(holder:GetChildren()) do
+                if t:IsA("Tool") then
+                    local u = t:GetAttribute("PET_UUID")
+                    if u then mine[tostring(u):gsub("[{}]","")] = true end
+                end
+            end
+        end
+        addTool(player:FindFirstChild("Backpack"))
+        addTool(player.Character)
+        -- pet di garden (Workspace.PetsPhysical dll)
+        for _, nm in ipairs({"PetsPhysical","Pets","PlacedPets","ActivePets"}) do
+            local f = Workspace:FindFirstChild(nm)
+            if f then
+                for _, d in ipairs(f:GetDescendants()) do
+                    local u = d:GetAttribute("PET_UUID") or d:GetAttribute("UUID")
+                    if not u then
+                        local n = d.Name:gsub("[{}]","")
+                        if #n >= 32 and n:find("-") then u = n end
+                    end
+                    if u then mine[tostring(u):gsub("[{}]","")] = true end
+                end
+            end
+        end
+    end)
+
+    local best, bestScore, bestCnt = nil, -1, 0
+    pcall(function()
+        for _, obj in pairs(getgc(true)) do
+            if type(obj) == "table" then
+                local valid, mineHits, scanned = 0, 0, 0
+                for k, v in pairs(obj) do
+                    if type(k) == "string" and #k >= 32 and k:find("-")
+                       and type(v) == "table" and rawget(v, "PetData") then
+                        valid = valid + 1
+                        local clean = k:gsub("[{}]","")
+                        if mine[clean] then mineHits = mineHits + 1 end
+                    end
+                    scanned = scanned + 1
+                    if scanned > 1200 then break end
+                end
+                if valid >= 3 then
+                    -- SKOR: utamakan container yg berisi pet kita (mineHits), bukan yg terbesar.
+                    -- mineHits dikali besar biar dominan; valid cuma tie-breaker kecil.
+                    local score = mineHits * 100000 + valid
+                    if score > bestScore then best, bestScore, bestCnt = obj, score, valid end
+                end
+            end
+        end
+    end)
+    return best, bestCnt
+end
+
+-- build cache uuid -> PetData. MERGE semua container yg berisi pet kita
+-- (pet bisa kesebar di container #2 & #3; garden pet kadang di salah satunya).
+function PetDetect.rebuild()
+    PetDetect.cache = {}
+    if not getgc then return 0 end
+    -- 1) kumpulin uuid pet kita (bp + char + garden)
+    local mine = {}
+    pcall(function()
+        local function addTool(holder)
+            if not holder then return end
+            for _, t in ipairs(holder:GetChildren()) do
+                if t:IsA("Tool") then
+                    local u = t:GetAttribute("PET_UUID")
+                    if u then mine[tostring(u):gsub("[{}]","")] = true end
+                end
+            end
+        end
+        addTool(player:FindFirstChild("Backpack"))
+        addTool(player.Character)
+        for _, nm in ipairs({"PetsPhysical","Pets","PlacedPets","ActivePets"}) do
+            local f = Workspace:FindFirstChild(nm)
+            if f then
+                for _, d in ipairs(f:GetDescendants()) do
+                    local u = d:GetAttribute("PET_UUID") or d:GetAttribute("UUID")
+                    if not u then
+                        local n = d.Name:gsub("[{}]","")
+                        if #n >= 32 and n:find("-") then u = n end
+                    end
+                    if u then mine[tostring(u):gsub("[{}]","")] = true end
+                end
+            end
+        end
+    end)
+    -- 2) walk SEMUA container, merge entry dari container yg berisi >=1 pet kita
+    local n = 0
+    pcall(function()
+        for _, obj in pairs(getgc(true)) do
+            if type(obj) == "table" then
+                -- cek dulu apakah container ini punya pet kita
+                local hasMine, valid, scanned = false, 0, 0
+                for k, v in pairs(obj) do
+                    if type(k) == "string" and #k >= 32 and k:find("-")
+                       and type(v) == "table" and rawget(v, "PetData") then
+                        valid = valid + 1
+                        if mine[k:gsub("[{}]","")] then hasMine = true end
+                    end
+                    scanned = scanned + 1
+                    if scanned > 1500 then break end
+                end
+                -- merge kalo container berisi pet kita (skip DB global 219 yg gak ada pet kita)
+                if hasMine and valid >= 1 then
+                    for k, v in pairs(obj) do
+                        if type(k) == "string" and #k >= 32 and k:find("-")
+                           and type(v) == "table" and rawget(v, "PetData") then
+                            local clean = k:gsub("[{}]","")
+                            if not PetDetect.cache[clean] then n = n + 1 end
+                            PetDetect.cache[clean] = v.PetData
+                            PetDetect.cache["{"..clean.."}"] = v.PetData
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    PetDetect.count = n
+    return n
+end
+
+-- base age-1 dari BaseWeight server (×1.1) — akurat age berapa pun
+function PetDetect.baseKg(pd)
+    if pd and pd.BaseWeight and pd.BaseWeight > 0 then
+        return pd.BaseWeight * 1.1
+    end
+    return nil
+end
+
+-- list SEMUA pet milik kita (termasuk yg di garden/placed) dari container,
+-- dilengkapi data dari tool backpack (nama & dispKg akurat) kalau ada.
+-- return array {uuid, name, rawName, mut, dispKg, level, fav, hasData, inBackpack}
+function PetDetect.listBackpackPets()
+    -- 1) kumpulin tool yg ada di backpack/character (sumber nama & dispKg paling akurat)
+    local toolByUuid = {}
+    local function scanTools(holder)
+        if not holder then return end
+        for _, t in ipairs(holder:GetChildren()) do
+            if t:IsA("Tool") then
+                local uuid = t:GetAttribute("PET_UUID")
+                local isPetTool = t:FindFirstChild("PetToolLocal") or uuid
+                if uuid and isPetTool then
+                    local clean = tostring(uuid):gsub("^{", ""):gsub("}$", "")
+                    toolByUuid[clean] = t
+                end
+            end
+        end
+    end
+    scanTools(player:FindFirstChild("Backpack"))
+    scanTools(player.Character)
+
+    -- lookup nama TIPE pet dari workspace (buat pet garden yg PetData-nya gak punya PetType)
+    local gardenName = {}
+    pcall(function()
+        for _, fname in ipairs({"PetsPhysical","Pets","PlacedPets","ActivePets"}) do
+            local f = Workspace:FindFirstChild(fname)
+            if f then
+                for _, d in ipairs(f:GetDescendants()) do
+                    local u = d:GetAttribute("PET_UUID") or d:GetAttribute("UUID")
+                    if not u then
+                        local n = d.Name:gsub("[{}]","")
+                        if #n >= 32 and n:find("-") then u = n end
+                    end
+                    if u then
+                        local clean = tostring(u):gsub("[{}]","")
+                        if not gardenName[clean] then
+                            -- cari nama tipe: atribut PetType/Type, atau dari child TextLabel PET_TYPE
+                            local nm = d:GetAttribute("PetType") or d:GetAttribute("Type")
+                                or d:GetAttribute("PetName") or d:GetAttribute("Name")
+                            if not nm then
+                                for _, c in ipairs(d:GetDescendants()) do
+                                    if c:IsA("TextLabel") and (c.Name == "PET_TYPE" or c.Name == "PetType")
+                                       and c.Text and #c.Text > 0 then
+                                        nm = c.Text break
+                                    end
+                                end
+                            end
+                            if nm and tostring(nm) ~= "" and not tostring(nm):find("-") then
+                                gardenName[clean] = tostring(nm)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    PetDetect._gardenName = gardenName
+
+    local out = {}
+    local seen = {}
+
+    -- helper: bikin entry dari uuid + PetData (+ tool kalau ada)
+    local function makeEntry(clean, pd, tool)
+        if seen[clean] then return end
+        seen[clean] = true
+        local nm, dispKg
+        if tool then
+            nm = tostring(tool.Name)
+            dispKg = tonumber(nm:match("%[([%d%.]+)%s*[Kk][Gg]%]"))
+        end
+        -- nama dasar (buang [KG]/[Age]); kalo gak ada tool, ambil dari PetData
+        local baseName
+        if nm then
+            baseName = nm:gsub("%s*%[.-%]", ""):gsub("%s+$", "")
+            -- simpan ke cache persisten (buat nanti pas pet pindah ke garden)
+            if baseName ~= "" then PetDetect.nameCache[clean] = baseName end
+        else
+            -- pet di garden: PetData → workspace → CACHE persisten → UUID
+            local t = pd and (pd.PetType or pd.Type or pd.Kind or pd.Species)
+            if (not t or tostring(t) == "") and PetDetect._gardenName then
+                t = PetDetect._gardenName[clean]
+            end
+            if (not t or tostring(t) == "") then
+                t = PetDetect.nameCache[clean]  -- nama dari waktu pet masih di backpack
+            end
+            if t and tostring(t) ~= "" then
+                baseName = tostring(t)
+            else
+                baseName = clean:sub(1, 8) .. "…"  -- last resort
+            end
+            nm = baseName
+        end
+        -- dispKg: dari tool, fallback hitung dari BaseWeight & Level
+        if not dispKg and pd and pd.BaseWeight and pd.Level then
+            dispKg = pd.BaseWeight * (pd.Level + 10) / 10
+        end
+        local mut = pd and pd.MutationType and tostring(pd.MutationType) or nil
+        if mut and PetDetect.MUT_SHORT[mut] then mut = PetDetect.MUT_SHORT[mut] end
+        -- favorit: PetData.IsFavorite, fallback atribut tool
+        local fav = false
+        if pd and pd.IsFavorite == true then fav = true end
+        if not fav and tool then
+            for _, attr in ipairs({"Favorited","Favourited","Favorite","Favourite","IsFavorited","IsFavourited"}) do
+                if tool:GetAttribute(attr) == true then fav = true break end
+            end
+        end
+        table.insert(out, {
+            uuid = clean,
+            name = baseName,
+            rawName = nm,
+            mut = (mut and mut ~= "" and mut) or nil,
+            dispKg = dispKg,
+            level = pd and pd.Level or nil,
+            fav = fav,
+            hasData = pd ~= nil,
+            inBackpack = tool ~= nil,
+        })
+    end
+
+    -- 2) sumber UTAMA: cache (gabungan semua container milik kita, termasuk pet garden)
+    -- cache punya key clean & braced; pakai set biar gak dobel
+    local doneUuid = {}
+    for k, pd in pairs(PetDetect.cache) do
+        local clean = tostring(k):gsub("[{}]", "")
+        if not doneUuid[clean] and type(pd) == "table" then
+            doneUuid[clean] = true
+            makeEntry(clean, pd, toolByUuid[clean])
+        end
+    end
+    -- 3) tambahin tool yg belum ke-cover cache (jaga-jaga)
+    for clean, tool in pairs(toolByUuid) do
+        if not seen[clean] then
+            local pd = PetDetect.cache[clean] or PetDetect.cache["{"..clean.."}"]
+            makeEntry(clean, pd, tool)
+        end
+    end
+    return out
+end
+
+
+if old then old:Destroy() end
+
+local gui = mk("ScreenGui", {
+    Name = "HactTelurGui", ResetOnSpawn = false,
+    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, Parent = CoreGui })
+
+local main = mk("Frame", {
+    Size = UDim2.new(0, 660, 0, 430),
+    Position = UDim2.new(0.5, -330, 0.5, -215),
+    BackgroundColor3 = C.bg, BorderSizePixel = 0, Parent = gui })
+corner(main, 14)
+stroke(main, C.line, 1.5)
+
+-- ---- Title bar ----
+local titleBar = mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1, Parent = main })
+local titleLogo = mk("TextLabel", {
+    Size = UDim2.new(0, 22, 0, 22), Position = UDim2.new(0, 16, 0, 11),
+    BackgroundTransparency = 1, Text = "H", Font = FONT_B, TextSize = 13,
+    TextColor3 = C.text, Parent = titleBar })
+corner(stroke(titleLogo, C.text, 1.5).Parent, 5)
+local titleTxt = lbl(titleBar, "HACT TELUR", 14, C.text)
+titleTxt.Font = FONT_B
+titleTxt.Position = UDim2.new(0, 46, 0, 0)
+titleTxt.Size = UDim2.new(0, 140, 1, 0)
+local verTxt = lbl(titleBar, VERSION, 11, C.textMute)
+verTxt.Position = UDim2.new(0, 150, 0, 0)
+verTxt.Size = UDim2.new(0, 60, 1, 0)
+
+-- tombol close (✕) — tutup seluruh skrip
+local closeMain = mk("TextButton", {
+    Size = UDim2.new(0, 30, 0, 30), Position = UDim2.new(1, -38, 0, 7),
+    BackgroundColor3 = C.card, Text = "\u{2715}", Font = FONT_B, TextSize = 14,
+    TextColor3 = C.textDim, AutoButtonColor = false, Parent = titleBar })
+corner(closeMain, 7); stroke(closeMain, C.border, 1.5)
+-- tombol minimize (—) — kecilin jadi logo
+local minBtn = mk("TextButton", {
+    Size = UDim2.new(0, 30, 0, 30), Position = UDim2.new(1, -74, 0, 7),
+    BackgroundColor3 = C.card, Text = "\u{2013}", Font = FONT_B, TextSize = 16,
+    TextColor3 = C.textDim, AutoButtonColor = false, Parent = titleBar })
+corner(minBtn, 7); stroke(minBtn, C.border, 1.5)
+-- drag
+do
+    local UIS = game:GetService("UserInputService")
+    local dragging, dragStart, startPos
+    titleBar.InputBegan:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+            dragging = true; dragStart = i.Position; startPos = main.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(i)
+        if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+            local d = i.Position - dragStart
+            main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+    UIS.InputEnded:Connect(function(i)
+        if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then dragging = false end
+    end)
+end
+
+-- ============ LOGO MINI (Z) — muncul saat minimize ============
+-- posisi TETAP di pojok kiri (gak bisa digeser). desain: hitam elegan + ring putih halus.
+local miniLogo = mk("TextButton", {
+    Size = UDim2.new(0, 50, 0, 50), Position = UDim2.new(0, 16, 0.4, 0),
+    BackgroundColor3 = Color3.fromRGB(20, 20, 20), Text = "", AutoButtonColor = false,
+    Visible = false, ZIndex = 60, Parent = gui })
+mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = miniLogo })  -- bulat penuh = mulus
+-- gradient halus biar ada kedalaman (gak flat)
+mk("UIGradient", {
+    Color = ColorSequence.new(Color3.fromRGB(34,34,34), Color3.fromRGB(16,16,16)),
+    Rotation = 90, Parent = miniLogo })
+-- ring luar putih halus & tipis (ApplyStrokeMode default = Contextual, sudut lebih mulus)
+local miniStroke = mk("UIStroke", {
+    Color = Color3.fromRGB(245,245,245), Thickness = 1.5,
+    Transparency = 0.1, Parent = miniLogo })
+-- ring dalam tipis abu (memberi efek bevel halus)
+local innerRing = mk("Frame", {
+    Size = UDim2.new(1, -8, 1, -8), Position = UDim2.new(0, 4, 0, 4),
+    BackgroundTransparency = 1, ZIndex = 60, Parent = miniLogo })
+mk("UICorner", { CornerRadius = UDim.new(1, 0), Parent = innerRing })
+mk("UIStroke", { Color = Color3.fromRGB(70,70,70), Thickness = 1, Transparency = 0.3, Parent = innerRing })
+-- huruf Z
+local miniZ = lbl(miniLogo, "Z", 24, Color3.fromRGB(248,248,248), Enum.TextXAlignment.Center)
+miniZ.Font = Enum.Font.GothamBold; miniZ.Size = UDim2.new(1, 0, 1, 0); miniZ.ZIndex = 61
+-- hover halus: ring makin terang
+miniLogo.MouseEnter:Connect(function() miniStroke.Transparency = 0 end)
+miniLogo.MouseLeave:Connect(function() miniStroke.Transparency = 0.1 end)
+
+-- minimize: sembunyiin panel, tampilin logo
+local function doMinimize()
+    main.Visible = false
+    miniLogo.Visible = true
+end
+-- restore: dari logo balik ke panel
+local function doRestore()
+    miniLogo.Visible = false
+    main.Visible = true
+end
+minBtn.MouseButton1Click:Connect(doMinimize)
+-- klik logo → restore (logo gak bisa digeser jadi langsung aja)
+miniLogo.MouseButton1Click:Connect(doRestore)
+-- close: hancurin semua (UI + logo), skrip selesai
+closeMain.MouseButton1Click:Connect(function()
+    gui:Destroy()
+end)
+
+local divider = mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 1.5), Position = UDim2.new(0, 0, 0, 44),
+    BackgroundColor3 = C.line, BorderSizePixel = 0, Parent = main })
+
+-- ============ SIDEBAR KIRI ============
+local sidebar = mk("Frame", {
+    Size = UDim2.new(0, 140, 1, -45), Position = UDim2.new(0, 0, 0, 45),
+    BackgroundTransparency = 1, Parent = main })
+local sideDiv = mk("Frame", {
+    Size = UDim2.new(0, 1.5, 1, 0), Position = UDim2.new(1, 0, 0, 0),
+    BackgroundColor3 = C.line, BorderSizePixel = 0, Parent = sidebar })
+
+local sidebarItems = { "AUTO HACT", "MISC" }
+local activeSide = "AUTO HACT"
+local sideBtns = {}
+
+local function makeSideBtn(name, y)
+    local btn = mk("TextButton", {
+        Size = UDim2.new(1, 0, 0, 40), Position = UDim2.new(0, 0, 0, y),
+        BackgroundColor3 = C.panel, BackgroundTransparency = 1,
+        Text = "", AutoButtonColor = false, Parent = sidebar })
+    local accent = mk("Frame", {
+        Size = UDim2.new(0, 2, 1, 0), BackgroundColor3 = C.accent,
+        BorderSizePixel = 0, Visible = false, Parent = btn })
+    local t = lbl(btn, name, 13, C.textDim)
+    t.Position = UDim2.new(0, 16, 0, 0)
+    t.Size = UDim2.new(1, -16, 1, 0)
+    sideBtns[name] = { btn = btn, accent = accent, label = t }
+    btn.MouseButton1Click:Connect(function()
+        activeSide = name
+        for n, d in pairs(sideBtns) do
+            local on = (n == name)
+            d.accent.Visible = on
+            d.btn.BackgroundTransparency = on and 0 or 1
+            d.label.TextColor3 = on and C.text or C.textDim
+            d.label.Font = on and FONT_B or FONT
+        end
+        -- TODO: switch konten kiri (AUTO HACT vs MISC)
+        if name == "MISC" then
+            -- placeholder: coming soon
+        end
+    end)
+    return btn
+end
+makeSideBtn("AUTO HACT", 14)
+makeSideBtn("MISC", 56)
+-- set default active
+do
+    local d = sideBtns["AUTO HACT"]
+    d.accent.Visible = true; d.btn.BackgroundTransparency = 0
+    d.label.TextColor3 = C.text; d.label.Font = FONT_B
+end
+
+-- ============ KONTEN KANAN ============
+local content = mk("Frame", {
+    Size = UDim2.new(1, -141, 1, -45), Position = UDim2.new(0, 141, 0, 45),
+    BackgroundTransparency = 1, Parent = main })
+pad(content, 16)
+
+-- ---- Tab bar (rata penuh: 6 tab sama lebar) ----
+local tabBar = mk("Frame", {
+    Size = UDim2.new(1, 0, 0, 30), BackgroundTransparency = 1, Parent = content })
+mk("UIListLayout", {
+    FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 5),
+    SortOrder = Enum.SortOrder.LayoutOrder,
+    HorizontalAlignment = Enum.HorizontalAlignment.Left, Parent = tabBar })
+
+local tabs = { "Reduce Tim", "Hatch Tim", "Sell Tim", "Config", "Fruit", "All Stat" }
+local activeTab = "Reduce Tim"
+local tabBtns = {}
+local tabPanels = {}
+local tabLabel = {
+    ["Reduce Tim"] = "Reduce", ["Hatch Tim"] = "Hatch", ["Sell Tim"] = "Sell",
+    ["Config"] = "Config", ["Fruit"] = "Fruit", ["All Stat"] = "All Stat",
+}
+local NUM_TABS = #tabs
+
+-- ===== DATA (didefinisikan SEBELUM makeTabBtn biar jadi upvalue, bukan global nil) =====
+local teamData = {
+    ["Reduce Tim"] = { label = "Pilih Pet Reduce", selected = {}, delayEquip = 0, delayUnequip = 1 },
+    ["Hatch Tim"]  = { label = "Pilih Pet Hatch",  selected = {}, delayEquip = 0, delayUnequip = 1 },
+    ["Sell Tim"]   = { label = "Pilih Pet Sell",   selected = {}, delayEquip = 0, delayUnequip = 1 },
+}
+
+-- daftar semua egg di game (dari EggModels). dipakai di Egg Config.
+local EGG_LIST = {
+    "Common Egg","Uncommon Egg","Rare Egg","Legendary Egg","Mythical Egg","Epic Egg","Divine Egg",
+    "Bug Egg","Exotic Bug Egg","Jungle Egg","Night Egg","Premium Night Egg","Bee Egg","Anti Bee Egg",
+    "Premium Anti Bee Egg","Hive Egg","Premium Hive Egg","Rainbow Premium Hive Egg","Prototype Bee Egg",
+    "Premium Prototype Bee Egg","Dinosaur Egg","Primal Egg","Premium Primal Egg","Rainbow Premium Primal Egg",
+    "Zen Egg","Corrupted Zen Egg","Sprout Egg","Enchanted Egg","Gem Egg","Gourmet Egg","Paradise Egg",
+    "Oasis Egg","Premium Oasis Egg","Safari Egg","Premium Safari Egg","Rainbow Premium Safari Egg",
+    "Fall Egg","Premium Fall Egg","GIANT Premium Fall Egg","Spooky Egg","Premium Spooky Egg",
+    "Ghostly Premium Spooky Egg","Christmas Egg","Premium Christmas Egg","Festive Premium Christmas Egg",
+    "Winter Egg","Premium Winter Egg","Festive Premium Winter Egg","New Year's Egg","Premium New Year's Egg",
+    "Rainbow Premium New Year's Egg","Carnival Egg","Premium Carnival Egg","Rainbow Premium Carnival Egg",
+    "Bird Egg","Premium Bird Egg","Rainbow Premium Bird Egg","Easter Egg","Golden Egg","Premium Golden Egg",
+    "Gilded Choc Golden Egg","Gilded Choc Premium Golden Egg","Springtide Egg","Premium Springtide Egg",
+    "Gilded Choc Springtide Egg","Gilded Choc Premium Springtide Egg","Common Summer Egg","Rare Summer Egg",
+    "Black Spotty Egg","Fake Egg",
+}
+
+-- daftar semua jenis pet di game (dari PetRegistry.PetList). dipakai di Sell Config.
+local PET_LIST = {
+    "Albino Peacock","Amethyst Beetle","Angora Goat","Ankylosaurus","Apple Gazelle","Arctic Fox","Armadillo","Ash Raven","Axolotl","Bacon Pig","Badger","Bagel Bunny","Bald Eagle","Barn Owl","Bat","Bear Bee","Bear on Bike","Bearded Dragon","Beaver","Bee","Birb","Black Bird","Black Bunny","Black Cat","Black Spotty Dragon","Blood Hedgehog","Blood Kiwi","Blood Owl","Blue Jay","Blue Whale","Bone Dog","Brontosaurus","Brown Mouse","Brown Owl","Bumblebee","Bunny","Butterfly","Calico","Camel","Candy Squirrel","Cape Buffalo","Capybara","Cardinal","Carnival Elephant","Carpenter Bee","Cat","Caterpillar","Celebration Puppy","Cerberus","Champion Beetle","Cheetah","Chicken","Chicken Zombie","Chimera","Chimpanzee","Chinchilla","Chipmunk","Chocolate Bunny","Christmas Gorilla","Christmas Spirit","Chubby Chipmunk","Clam","Cockatrice","Cocoa Cat","Cooked Owl","Corrupted Kitsune","Corrupted Kodama","Cow","Crab","Crocodile","Crow","Cuckoo","Dairy Cow","Dark Spriggan","Deer","Diamond Dragonfly","Diamond Panther","Dilophosaurus","Disco Bee","Dog","Dragonfly","Drake","Easter Bunny","Easter Egg Chick","Echo Frog","Eggnog Chick","Elemental Bee","Elephant","Elk","Emerald Snake","Empress Bee","Farmer Chipmunk","Fennec Fox","Festive Frost Squirrel","Festive Ice Golem","Festive Moose","Festive Nutcracker","Festive Partridge","Festive Reindeer","Festive Santa Bear","Festive Turtle Dove","Festive Wendigo","Festive Yeti","Firefly","Firemite","Firework Sprite","Flame Bee","Flamingo","Football","Fortune Squirrel","French Fry Ferret","French Hen","Frog","Frost Dragon","Frost Squirrel","Galah Cockatoo","Gardener Bee","Gecko","Geode Turtle","German Shepherd","Ghost Bear","Ghostly Bat","Ghostly Black Cat","Ghostly Bone Dog","Ghostly Dark Spriggan","Ghostly Headless Horseman","Ghostly Mummy","Ghostly Scarab","Ghostly Spider","Ghostly Tomb Marmot","Giant Ant","Giant Scorpion","Gift Rat","Giraffe","Glass Cat","Glass Dog","Glimmering Sprite","Gnome","Goat","Goblin","Goblin Gardener","Goblin Miner","Gold Finch","Golden Bee","Golden Goose","Golden Lab","Golden Piggy","Golem","Gorilla Chef","Green Bean","Grey Mouse","Griffin","Grizzly Bear","Gummy Bear","Hamster","Hazehound","Headless Horseman","Hedgehog","Hex Serpent","Hippo","Honey Badger","Honey Bee","Hootsie Roll","Hotdog Daschund","Hummingbird","Hyacinth Macaw","Hydra","Hyena","Hyrax","Ice Golem","Idol Chipmunk","Iguana","Iguanodon","Imp","Jackalope","Jandel Monkey","Jerboa","Junkbot","Kappa","King Bee","Kitsune","Kiwi","Kodama","Koi","Krampus","Ladybug","Leaf Insect","Lemon Lion","Lich","Lion","Lioness","Lobster Thermidor","Luminous Sprite","Lyrebird","Magpie","Mallard","Mandrake","Maneki-neko","Mantis Shrimp","Marmot","Marshmallow Lamb","Meerkat","Messenger Pigeon","Mimic Octopus","Mistletoad","Mizuchi","Mochi Mouse","Mole","Monitor Lizard","Monkey","Moon Cat","Moose","Moss Wyvern","Moth","Mummy","Night Owl","Nihonzaru","Nurse Bee","Nutcracker","Nyala","Orange Tabby","Orangutan","Orchid Mantis","Ostrich","Owl","Oxpecker","Pachycephalosaurus","Pack Bee","Pack Mule","Pancake Mole","Panda","Parasaurolophus","Partridge","Peach Wasp","Peacock","Penguin","Performer Seal","Peryton","Petal Bee","Phoenix","Pig","Pine Beetle","Pink Bunny","Pink Panda","Pixie","Polar Bear","Praying Mantis","Prince Wasp","Professor Bee","Pterodactyl","Pumpkin Rat","Queen Bee","Quetzal","Raccoon","Radioactive Stegosaurus","Raiju","Raptor","Reaper","Red Dragon","Red Fox","Red Giant Ant","Red Panda","Red Rose Fox","Red Squirrel","Red-Nosed Reindeer","Reindeer","Rhino","Robin","Rooster","Ruby Squid","Salmon","Sand Snake","Santa Bear","Sapphire Macaw","Scarab","Scarlet Macaw","Sea Otter","Sea Turtle","Seagull","Seal","Seedling","Sheckling","Shiba Inu","Show Pony","Shroomie","Silver Dragonfly","Silver Monkey","Silver Piggy","Smithing Dog","Snail","Snow Bunny","Snowman Builder","Snowman Soldier","Space Squirrel","Spaghetti Sloth","Specter","Spider","Spinosaurus","Spotted Deer","Spriggan","Spring Bee","Squirrel","Stag Beetle","Star Wolf","Starfish","Stegosaurus","Stork","Sugar Glider","Summer Kiwi","Sunny-Side Chicken","Sushi Bear","Swan","T-Rex","Tanchozuru","Tanuki","Tarantula Hawk","Termite","Tiger","Tomb Marmot","Topaz Snail","Toucan","Trapdoor Spider","Tree Frog","Triceratops","Tsuchinoko","Turtle","Turtle Dove","Unicycle Monkey","Wasp","Water Buffalo","Wendigo","White Tiger","Wind Wyvern","Wind-Up Rat","Wisp","Wolf","Woodpecker","Woody","Yeti","Zebra",
+}
+
+-- penyimpanan config (persist selama sesi)
+local config = {
+    eggSelected = {},   -- {[eggName] = true} egg yg mau di-hatch
+    maxEquipEgg = 0,    -- max egg yg di-equip (farm). 0 = auto/semua. max 13.
+    sellRules = {},     -- {[petType] = {action="sell"|"keep", kg=number}} : under kg = SELL (kalo action sell)
+    autoSell = false,
+    sellRunning = false,
+}
+
+-- ============ SISTEM JUAL PET ============
+local GameEvents = game:GetService("ReplicatedStorage"):FindFirstChild("GameEvents")
+local SellSys = {}
+do
+    -- remote
+    SellSys.petsRE = GameEvents and GameEvents:FindFirstChild("PetsService")
+    SellSys.leadRE = GameEvents and GameEvents:FindFirstChild("PetLeadService_RE")
+    SellSys.sellAllRE = GameEvents and GameEvents:FindFirstChild("SellAllPets_RE")
+    SellSys.sellOneRE = GameEvents and GameEvents:FindFirstChild("SellPet_RE")
+end
+local function fmtUUID(u)
+    u = tostring(u):gsub("[{}]", "")
+    return "{"..u.."}"
+end
+-- jual satu pet
+local function sellOnePet(uuid)
+    local u = fmtUUID(uuid)
+    if SellSys.sellOneRE then
+        pcall(function() SellSys.sellOneRE:FireServer(u) end)
+        return true
+    end
+    return false
+end
+-- AUTO SELL: jual pet yg KG < threshold sesuai rule per jenis pet.
+-- pet tanpa rule = KEEP. pet KG >= threshold = KEEP.
+function doAutoSell()
+    PetDetect.rebuild()
+    local sold = 0
+    for _, p in ipairs(PetDetect.listBackpackPets()) do
+        local rule = config.sellRules[p.name]   -- {action, kg}
+        if rule and rule.action == "sell" and p.dispKg and p.dispKg < (rule.kg or 0) then
+            -- KEEP rule = gak dijual sama sekali. SELL = jual yg under kg.
+            if not p.fav then
+                sellOnePet(p.uuid)
+                sold = sold + 1
+                task.wait(0.12)
+            end
+        end
+    end
+    print("[HactTelur] Auto-sell selesai. Pet terjual: "..sold)
+    return sold
+end
+
+local function makeTabBtn(name, order)
+    -- rata penuh: tiap tab = 1/6 lebar, dikurangi gap biar gak overflow
+    local btn = mk("TextButton", {
+        Size = UDim2.new(1 / NUM_TABS, -5, 1, 0),
+        BackgroundColor3 = C.card, Text = "", AutoButtonColor = false,
+        LayoutOrder = order, Parent = tabBar })
+    corner(btn, 8)
+    local st = stroke(btn, C.border, 1)
+    local t = lbl(btn, tabLabel[name] or name, 12, C.textDim, Enum.TextXAlignment.Center)
+    t.Size = UDim2.new(1, 0, 1, 0)
+    t.TextTruncate = Enum.TextTruncate.AtEnd
+    tabBtns[name] = { btn = btn, label = t, st = st }
+    btn.MouseButton1Click:Connect(function()
+        activeTab = name
+        for n, d in pairs(tabBtns) do
+            local on = (n == name)
+            d.btn.BackgroundColor3 = on and C.card or C.bg
+            d.btn.BackgroundTransparency = on and 0 or 1
+            d.label.TextColor3 = on and C.text or C.textDim
+            d.label.Font = on and FONT_B or FONT
+            d.st.Color = on and C.borderSel or C.border
+        end
+        for n, p in pairs(tabPanels) do p.Visible = (n == name) end
+        -- refresh persen kalo tab tim
+        if teamData[name] and teamData[name].refreshPct then teamData[name].refreshPct() end
+    end)
+    return btn
+end
+for i, name in ipairs(tabs) do makeTabBtn(name, i) end
+
+-- ---- Area panel (di bawah tab bar) ----
+local panelArea = mk("Frame", {
+    Size = UDim2.new(1, 0, 1, -38), Position = UDim2.new(0, 0, 0, 38),
+    BackgroundTransparency = 1, Parent = content })
+
+local openPetPicker  -- forward declare (didefinisikan di bawah)
+local fruitData       -- forward declare (diisi di makeFruitPanel)
+
+-- ============ PANEL TIM (Reduce / Hatch / Sell) ============
+-- Dipakai 3x dgn label beda. selectedPets = set per-tim (placeholder).
+local function makeDelayInput(parent, labelTxt, x, default)
+    local wrap = mk("Frame", {
+        Size = UDim2.new(0.5, -5, 0, 50), Position = UDim2.new(x, x > 0 and 5 or 0, 0, 0),
+        BackgroundTransparency = 1, Parent = parent })
+    local l = lbl(wrap, labelTxt, 11, C.textDim)
+    l.Size = UDim2.new(1, 0, 0, 16)
+    local box = mk("TextBox", {
+        Size = UDim2.new(1, 0, 0, 30), Position = UDim2.new(0, 0, 0, 18),
+        BackgroundColor3 = C.input, Text = tostring(default), Font = FONT,
+        TextSize = 13, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Left,
+        ClearTextOnFocus = false, Parent = wrap })
+    corner(box, 7); stroke(box, C.border, 1)
+    mk("UIPadding", { PaddingLeft = UDim.new(0, 12), Parent = box })
+    return box
+end
+
+local function makeTeamPanel(tabName)
+    local panel = mk("Frame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+        Visible = (tabName == activeTab), Parent = panelArea })
+    local data = teamData[tabName]
+
+    -- panel persentase (pojok kanan atas) — Koi / Bronto / Seal
+    local pctBox = mk("Frame", {
+        Size = UDim2.new(0, 150, 0, 62), Position = UDim2.new(1, -150, 0, 0),
+        BackgroundColor3 = C.card, BorderSizePixel = 0, ZIndex = 5, Parent = panel })
+    corner(pctBox, 8); stroke(pctBox, C.border, 1.5)
+    mk("UIPadding", { PaddingTop = UDim.new(0,6), PaddingLeft = UDim.new(0,10),
+        PaddingRight = UDim.new(0,10), Parent = pctBox })
+    mk("UIListLayout", { Padding = UDim.new(0,2), SortOrder = Enum.SortOrder.LayoutOrder, Parent = pctBox })
+    local function pctRow(name)
+        local r = mk("Frame", { Size = UDim2.new(1,0,0,16), BackgroundTransparency = 1, ZIndex = 6, Parent = pctBox })
+        local l = lbl(r, name, 11, C.textDim); l.Size = UDim2.new(0.5, 0, 1, 0); l.ZIndex = 6
+        local v = lbl(r, "—", 11, C.text, Enum.TextXAlignment.Right)
+        v.Font = FONT_B; v.Size = UDim2.new(0.5, 0, 1, 0); v.ZIndex = 6
+        return v
+    end
+    local pctKoi   = pctRow("Koi")
+    local pctBront = pctRow("Bronto")
+    local pctSeal  = pctRow("Seal")
+    -- fungsi refresh (dipanggil saat tab dibuka / pilihan berubah)
+    data.refreshPct = function()
+        task.spawn(function()
+            -- gabung semua pet yg dipilih dari semua tim (Reduce/Hatch/Sell)
+            local allSel = {}
+            for _, tn in ipairs({"Reduce Tim", "Hatch Tim", "Sell Tim"}) do
+                if teamData[tn] and teamData[tn].selected then
+                    for u in pairs(teamData[tn].selected) do allSel[u] = true end
+                end
+            end
+            local k = PetDetect.sumPctSelected(allSel, "Koi", "koi")
+            local b = PetDetect.sumPctSelected(allSel, "Brontosaurus", "bronto")
+            local s = PetDetect.sumPctSelected(allSel, "Seal", "seal")
+            pctKoi.Text   = string.format("%.2f%%", k)
+            pctBront.Text = string.format("%.2f%%", b)
+            pctSeal.Text  = string.format("%.2f%%", s)
+        end)
+    end
+
+    -- delay row (dikecilin lebarnya biar gak ketabrak panel persen)
+    local delayRow = mk("Frame", {
+        Size = UDim2.new(1, -160, 0, 50), BackgroundTransparency = 1, Parent = panel })
+    makeDelayInput(delayRow, "Delay Equip (sec)", 0, data.delayEquip)
+    makeDelayInput(delayRow, "Delay Unequip (sec)", 0.5, data.delayUnequip)
+
+    -- TOMBOL pilih pet (buka picker) — sesuai req: search pet diganti jadi tombol
+    local pickBtn = mk("TextButton", {
+        Size = UDim2.new(1, 0, 0, 38), Position = UDim2.new(0, 0, 0, 62),
+        BackgroundColor3 = C.card, Text = "", AutoButtonColor = false, Parent = panel })
+    corner(pickBtn, 8); stroke(pickBtn, C.border, 1)
+    local pickLbl = lbl(pickBtn, data.label .. "  (0 dipilih)", 12, C.text)
+    pickLbl.Position = UDim2.new(0, 14, 0, 0)
+    pickLbl.Size = UDim2.new(1, -40, 1, 0)
+    pickLbl.Font = FONT_SB
+    local chevron = lbl(pickBtn, ">", 14, C.textDim, Enum.TextXAlignment.Right)
+    chevron.Position = UDim2.new(1, -30, 0, 0)
+    chevron.Size = UDim2.new(0, 20, 1, 0)
+    pickBtn.MouseButton1Click:Connect(function()
+        openPetPicker(tabName)
+    end)
+    data.pickLbl = pickLbl
+
+    -- v0.9: ringkasan pet yg dipakai (muncul di bawah tombol pilih)
+    local sumScroll = mk("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, -158), Position = UDim2.new(0, 0, 0, 106),
+        BackgroundColor3 = C.card, BorderSizePixel = 0,
+        ScrollBarThickness = 3, ScrollBarImageColor3 = C.border,
+        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Parent = panel })
+    corner(sumScroll, 8); stroke(sumScroll, C.border, 1.5)
+    mk("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder, Parent = sumScroll })
+    mk("UIPadding", { PaddingTop = UDim.new(0,6), PaddingBottom = UDim.new(0,6),
+        PaddingLeft = UDim.new(0,10), PaddingRight = UDim.new(0,10), Parent = sumScroll })
+
+    local sumRows = {}
+    local function refreshSummary()
+        for _, r in ipairs(sumRows) do r:Destroy() end
+        sumRows = {}
+        -- bikin lookup uuid->info dari backpack biar dapet nama
+        local info = {}
+        for _, p in ipairs(PetDetect.listBackpackPets()) do info[p.uuid] = p end
+        local any = false
+        for uuid in pairs(data.selected) do
+            any = true
+            local p = info[uuid]
+            local txt
+            if p then
+                txt = "• " .. ((p.mut and ("["..p.mut.."] ") or "") .. p.name)
+                if p.dispKg then txt = txt .. string.format("  (%.2f KG)", p.dispKg) end
+            else
+                txt = "• " .. uuid:sub(1, 8) .. "…"  -- gak ketemu di backpack (mungkin di-place)
+            end
+            local row = lbl(sumScroll, txt, 11, C.text)
+            row.Size = UDim2.new(1, 0, 0, 15)
+            row.TextTruncate = Enum.TextTruncate.AtEnd
+            table.insert(sumRows, row)
+        end
+        if not any then
+            local empty = lbl(sumScroll, "Belum ada pet dipilih", 11, C.textMute, Enum.TextXAlignment.Center)
+            empty.Size = UDim2.new(1, 0, 0, 15)
+            table.insert(sumRows, empty)
+        end
+    end
+    data.refreshSummary = refreshSummary
+    refreshSummary()
+
+    -- START / STOP
+    local btnRow = mk("Frame", {
+        Size = UDim2.new(1, 0, 0, 38), Position = UDim2.new(0, 0, 1, -38),
+        BackgroundTransparency = 1, Parent = panel })
+    local startBtn = mk("TextButton", {
+        Size = UDim2.new(0.5, -5, 1, 0), BackgroundColor3 = C.accent,
+        Text = "START", Font = FONT_B, TextSize = 13, TextColor3 = Color3.fromRGB(17,17,17),
+        AutoButtonColor = false, Parent = btnRow })
+    corner(startBtn, 8)
+    local stopBtn = mk("TextButton", {
+        Size = UDim2.new(0.5, -5, 1, 0), Position = UDim2.new(0.5, 5, 0, 0),
+        BackgroundColor3 = C.bg, BackgroundTransparency = 1,
+        Text = "STOP", Font = FONT_SB, TextSize = 13, TextColor3 = C.textDim,
+        AutoButtonColor = false, Parent = btnRow })
+    corner(stopBtn, 8); stroke(stopBtn, C.border, 1)
+
+    -- v0.3: state RUNNING (mirip Node Hub: START → "⚡ RUNNING.")
+    local function setRunning(on)
+        data.running = on
+        if on then
+            startBtn.Text = "⚡ RUNNING."
+            startBtn.BackgroundColor3 = C.accent
+            startBtn.TextColor3 = Color3.fromRGB(17,17,17)
+        else
+            startBtn.Text = "START"
+            startBtn.BackgroundColor3 = C.accent
+            startBtn.TextColor3 = Color3.fromRGB(17,17,17)
+        end
+    end
+    data.setRunning = setRunning
+
+    startBtn.MouseButton1Click:Connect(function()
+        if data.running then return end
+        setRunning(true)
+        -- TODO: jalanin auto-hatch/swap buat tim ini
+    end)
+    stopBtn.MouseButton1Click:Connect(function()
+        if not data.running then return end
+        setRunning(false)
+        -- TODO: stop loop tim ini
+    end)
+
+    tabPanels[tabName] = panel
+    return panel
+end
+
+-- ============ PANEL CONFIG ============
+local function makeConfigPanel()
+    local panel = mk("Frame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+        Visible = false, Parent = panelArea })
+
+    -- area scroll (semua isi config masuk sini biar gak kepotong)
+    local content = mk("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+        BorderSizePixel = 0, ScrollBarThickness = 4, ScrollBarImageColor3 = C.line,
+        CanvasSize = UDim2.new(0, 0, 0, 440), Parent = panel })
+
+    -- ===== EGG CONFIG (header) =====
+    local title = lbl(content, "Egg Config", 13, C.text)
+    title.Font = FONT_B
+    title.Position = UDim2.new(0, 4, 0, 0)
+    title.Size = UDim2.new(1, -8, 0, 20)
+
+    -- baris: "Egg Inventory" + dropdown Select Egg
+    local lblInv = lbl(content, "Egg Inventory", 12, C.textDim)
+    lblInv.Position = UDim2.new(0, 4, 0, 32)
+    lblInv.Size = UDim2.new(0.5, 0, 0, 32)
+
+    local ddBtn = mk("TextButton", {
+        Parent = content,
+        Size = UDim2.new(0.5, -4, 0, 32), Position = UDim2.new(0.5, 4, 0, 32),
+        BackgroundColor3 = C.input, Text = "", AutoButtonColor = false, Parent = content })
+    corner(ddBtn, 7); stroke(ddBtn, C.border, 1)
+    local ddLabel = lbl(ddBtn, "Select Egg…", 12, C.textDim, Enum.TextXAlignment.Left)
+    ddLabel.Position = UDim2.new(0, 12, 0, 0); ddLabel.Size = UDim2.new(1, -36, 1, 0)
+    local ddChev = lbl(ddBtn, "▼", 10, C.textDim, Enum.TextXAlignment.Right)
+    ddChev.Position = UDim2.new(1, -26, 0, 0); ddChev.Size = UDim2.new(0, 18, 1, 0)
+
+    local function eggCount()
+        local n = 0; for _ in pairs(config.eggSelected) do n = n + 1 end; return n
+    end
+    local function refreshDdLabel()
+        local n = eggCount()
+        if n == 0 then ddLabel.Text = "Select Egg…"; ddLabel.TextColor3 = C.textDim
+        elseif n == 1 then
+            local nm; for k in pairs(config.eggSelected) do nm = k break end
+            ddLabel.Text = nm; ddLabel.TextColor3 = C.text
+        else ddLabel.Text = n .. " egg dipilih"; ddLabel.TextColor3 = C.text end
+    end
+
+    -- baris: "Max Equip Egg (Farm): Max 13" + input
+    local lblMax = lbl(panel, "Max Equip Egg (Farm): Max 13", 12, C.textDim)
+    lblMax.Position = UDim2.new(0, 4, 0, 72)
+    lblMax.Size = UDim2.new(0.65, 0, 0, 32)
+    local maxBox = mk("TextBox", {
+        Size = UDim2.new(0.35, -4, 0, 32), Position = UDim2.new(0.65, 4, 0, 72),
+        BackgroundColor3 = C.input, Text = tostring(config.maxEquipEgg), Font = FONT,
+        TextSize = 13, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Center,
+        ClearTextOnFocus = false, Parent = content })
+    corner(maxBox, 7); stroke(maxBox, C.border, 1)
+    maxBox.FocusLost:Connect(function()
+        local v = tonumber(maxBox.Text) or 0
+        v = math.clamp(math.floor(v), 0, 13)
+        config.maxEquipEgg = v
+        maxBox.Text = tostring(v)
+    end)
+
+    -- ===== OVERLAY pilih egg (multi-select) =====
+    local overlay = mk("Frame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = C.bg, BackgroundTransparency = 0.15,
+        Visible = false, ZIndex = 40, Parent = panel })
+    local oTitle = lbl(overlay, "Pilih Egg", 13, C.text)
+    oTitle.Font = FONT_B; oTitle.Position = UDim2.new(0, 4, 0, 2)
+    oTitle.Size = UDim2.new(0.5, 0, 0, 22); oTitle.ZIndex = 41
+    local oCounter = lbl(overlay, "(0)", 11, C.textDim, Enum.TextXAlignment.Right)
+    oCounter.Position = UDim2.new(1, -130, 0, 2); oCounter.Size = UDim2.new(0, 60, 0, 22); oCounter.ZIndex = 41
+    local oClose = mk("TextButton", {
+        Size = UDim2.new(0, 60, 0, 22), Position = UDim2.new(1, -64, 0, 2),
+        BackgroundColor3 = C.card, Text = "Tutup", Font = FONT_SB, TextSize = 11,
+        TextColor3 = C.text, AutoButtonColor = false, ZIndex = 41, Parent = overlay })
+    corner(oClose, 6); stroke(oClose, C.border, 1)
+
+    local searchBox = mk("TextBox", {
+        Size = UDim2.new(1, -150, 0, 30), Position = UDim2.new(0, 0, 0, 28),
+        BackgroundColor3 = C.input, Text = "", PlaceholderText = "cari egg…",
+        PlaceholderColor3 = C.textMute, Font = FONT, TextSize = 13, TextColor3 = C.text,
+        TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false, ZIndex = 41, Parent = overlay })
+    corner(searchBox, 7); stroke(searchBox, C.border, 1)
+    mk("UIPadding", { PaddingLeft = UDim.new(0, 12), Parent = searchBox })
+    local btnAll = mk("TextButton", {
+        Size = UDim2.new(0, 66, 0, 30), Position = UDim2.new(1, -140, 0, 28),
+        BackgroundColor3 = C.card, Text = "Semua", Font = FONT_SB, TextSize = 11,
+        TextColor3 = C.text, AutoButtonColor = false, ZIndex = 41, Parent = overlay })
+    corner(btnAll, 7); stroke(btnAll, C.border, 1)
+    local btnNone = mk("TextButton", {
+        Size = UDim2.new(0, 66, 0, 30), Position = UDim2.new(1, -68, 0, 28),
+        BackgroundColor3 = C.card, Text = "Kosong", Font = FONT_SB, TextSize = 11,
+        TextColor3 = C.text, AutoButtonColor = false, ZIndex = 41, Parent = overlay })
+    corner(btnNone, 7); stroke(btnNone, C.border, 1)
+
+    local listScroll = mk("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, -64), Position = UDim2.new(0, 0, 0, 64),
+        BackgroundColor3 = C.card, BorderSizePixel = 0, ScrollBarThickness = 4,
+        ScrollBarImageColor3 = C.line, CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 41, Parent = overlay })
+    corner(listScroll, 8); stroke(listScroll, C.border, 1)
+    mk("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder, Parent = listScroll })
+    mk("UIPadding", { PaddingTop = UDim.new(0,4), PaddingBottom = UDim.new(0,4),
+        PaddingLeft = UDim.new(0,6), PaddingRight = UDim.new(0,6), Parent = listScroll })
+
+    local rows = {}
+    local function refreshCounter() oCounter.Text = "("..eggCount()..")" end
+    local function buildList(filter)
+        for _, r in ipairs(rows) do r:Destroy() end
+        rows = {}
+        filter = (filter or ""):lower()
+        for i, egg in ipairs(EGG_LIST) do
+            if filter == "" or egg:lower():find(filter, 1, true) then
+                local row = mk("TextButton", {
+                    Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = C.cardSel,
+                    Text = "", AutoButtonColor = false, LayoutOrder = i, ZIndex = 42, Parent = listScroll })
+                corner(row, 6)
+                local check = lbl(row, config.eggSelected[egg] and "★" or "☆", 15,
+                    config.eggSelected[egg] and C.text or C.textMute)
+                check.Position = UDim2.new(0, 10, 0, 0); check.Size = UDim2.new(0, 24, 1, 0); check.ZIndex = 42
+                local nameL = lbl(row, egg, 12, config.eggSelected[egg] and C.text or C.textDim)
+                nameL.Position = UDim2.new(0, 38, 0, 0); nameL.Size = UDim2.new(1, -44, 1, 0); nameL.ZIndex = 42
+                row.MouseButton1Click:Connect(function()
+                    config.eggSelected[egg] = (not config.eggSelected[egg]) or nil
+                    local on = config.eggSelected[egg] == true
+                    check.Text = on and "★" or "☆"
+                    check.TextColor3 = on and C.text or C.textMute
+                    nameL.TextColor3 = on and C.text or C.textDim
+                    refreshCounter()
+                end)
+                table.insert(rows, row)
+            end
+        end
+    end
+    searchBox:GetPropertyChangedSignal("Text"):Connect(function() buildList(searchBox.Text) end)
+    btnAll.MouseButton1Click:Connect(function()
+        for _, e in ipairs(EGG_LIST) do config.eggSelected[e] = true end
+        buildList(searchBox.Text); refreshCounter()
+    end)
+    btnNone.MouseButton1Click:Connect(function()
+        config.eggSelected = {}; buildList(searchBox.Text); refreshCounter()
+    end)
+    ddBtn.MouseButton1Click:Connect(function()
+        overlay.Visible = true; buildList(""); refreshCounter()
+    end)
+    oClose.MouseButton1Click:Connect(function()
+        overlay.Visible = false; refreshDdLabel()
+    end)
+
+    refreshDdLabel()
+
+    -- ===== SELL PET CONFIG (rule per jenis pet: KG < threshold = SELL) =====
+    local sTitle = lbl(panel, "Sell Pet Config", 13, C.text)
+    sTitle.Font = FONT_B
+    sTitle.Position = UDim2.new(0, 4, 0, 116)
+    sTitle.Size = UDim2.new(0.6, 0, 0, 20)
+    local sHint = lbl(panel, "KG < threshold = SELL", 10, C.textMute, Enum.TextXAlignment.Right)
+    sHint.Position = UDim2.new(0.5, 0, 0, 118); sHint.Size = UDim2.new(0.5, -4, 0, 16)
+
+    -- daftar rule (scroll)
+    local ruleScroll = mk("ScrollingFrame", {
+        Size = UDim2.new(1, -8, 0, 170), Position = UDim2.new(0, 4, 0, 140),
+        BackgroundColor3 = C.card, BorderSizePixel = 0, ScrollBarThickness = 4,
+        ScrollBarImageColor3 = C.line, CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, Parent = content })
+    corner(ruleScroll, 7); stroke(ruleScroll, C.border, 1)
+    mk("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder, Parent = ruleScroll })
+    mk("UIPadding", { PaddingTop = UDim.new(0,4), PaddingBottom = UDim.new(0,4),
+        PaddingLeft = UDim.new(0,6), PaddingRight = UDim.new(0,6), Parent = ruleScroll })
+    local ruleEmpty = lbl(ruleScroll, "belum ada rule", 11, C.textMute, Enum.TextXAlignment.Center)
+    ruleEmpty.Size = UDim2.new(1, 0, 0, 24)
+
+    local ruleRows = {}
+    local function refreshRules()
+        for _, r in ipairs(ruleRows) do r:Destroy() end
+        ruleRows = {}
+        local any = false
+        local order = 0
+        for petType, rule in pairs(config.sellRules) do
+            any = true; order = order + 1
+            local row = mk("Frame", {
+                Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = C.cardSel,
+                LayoutOrder = order, Parent = ruleScroll })
+            corner(row, 5)
+            -- nama pet
+            local nm = lbl(row, petType, 11, C.text)
+            nm.Position = UDim2.new(0, 8, 0, 0); nm.Size = UDim2.new(0.38, 0, 1, 0)
+            nm.TextTruncate = Enum.TextTruncate.AtEnd
+            -- "under" + input KG (editable)
+            local underL = lbl(row, "under", 10, C.textDim, Enum.TextXAlignment.Right)
+            underL.Position = UDim2.new(0.38, 0, 0, 0); underL.Size = UDim2.new(0, 36, 1, 0)
+            local kgIn = mk("TextBox", {
+                Size = UDim2.new(0, 42, 0, 20), Position = UDim2.new(0.38, 40, 0.5, -10),
+                BackgroundColor3 = C.input, Text = tostring(rule.kg or 0), Font = FONT,
+                TextSize = 11, TextColor3 = C.text, TextXAlignment = Enum.TextXAlignment.Center,
+                ClearTextOnFocus = false, Parent = row })
+            corner(kgIn, 4); stroke(kgIn, C.border, 1)
+            kgIn.FocusLost:Connect(function()
+                local v = tonumber(kgIn.Text) or 0
+                config.sellRules[petType].kg = v
+                kgIn.Text = tostring(v)
+            end)
+            local kgL = lbl(row, "KG", 10, C.textDim)
+            kgL.Position = UDim2.new(0.38, 84, 0, 0); kgL.Size = UDim2.new(0, 22, 1, 0)
+            -- toggle KEEP / SELL
+            local actBtn = mk("TextButton", {
+                Size = UDim2.new(0, 52, 0, 20), Position = UDim2.new(1, -86, 0.5, -10),
+                BackgroundColor3 = C.input, Text = "", AutoButtonColor = false, Parent = row })
+            corner(actBtn, 5); stroke(actBtn, C.border, 1)
+            local actL = lbl(actBtn, "", 10, C.text, Enum.TextXAlignment.Center)
+            actL.Size = UDim2.new(1, 0, 1, 0)
+            local function refreshAct()
+                local a = config.sellRules[petType].action
+                actL.Text = a == "keep" and "KEEP" or "SELL"
+                actL.TextColor3 = a == "keep" and C.text or C.danger
+                -- kalo keep, KG gak relevan (semua disimpan) - redupkan input KG
+                kgIn.TextTransparency = a == "keep" and 0.5 or 0
+                underL.TextTransparency = a == "keep" and 0.5 or 0
+                kgL.TextTransparency = a == "keep" and 0.5 or 0
+            end
+            actBtn.MouseButton1Click:Connect(function()
+                local r = config.sellRules[petType]
+                r.action = (r.action == "keep") and "sell" or "keep"
+                refreshAct()
+            end)
+            refreshAct()
+            -- hapus
+            local del = mk("TextButton", {
+                Size = UDim2.new(0, 24, 0, 20), Position = UDim2.new(1, -28, 0.5, -10),
+                BackgroundColor3 = C.input, Text = "−", Font = FONT_B, TextSize = 14,
+                TextColor3 = C.danger, AutoButtonColor = false, Parent = row })
+            corner(del, 5)
+            del.MouseButton1Click:Connect(function()
+                config.sellRules[petType] = nil; refreshRules()
+            end)
+            table.insert(ruleRows, row)
+        end
+        ruleEmpty.Visible = not any
+    end
+
+    -- baris tambah rule: dropdown pet + KG + tombol +
+    local lblType = lbl(panel, "Select Pet Type", 12, C.textDim)
+    lblType.Position = UDim2.new(0, 4, 0, 318); lblType.Size = UDim2.new(0.4, 0, 0, 30)
+    local petDd = mk("TextButton", {
+        Size = UDim2.new(0.6, -4, 0, 30), Position = UDim2.new(0.4, 4, 0, 318),
+        BackgroundColor3 = C.input, Text = "", AutoButtonColor = false, Parent = content })
+    corner(petDd, 7); stroke(petDd, C.border, 1)
+    local petDdLabel = lbl(petDd, "Select Pet...", 12, C.textDim, Enum.TextXAlignment.Left)
+    petDdLabel.Position = UDim2.new(0, 12, 0, 0); petDdLabel.Size = UDim2.new(1, -34, 1, 0)
+    lbl(petDd, "▼", 10, C.textDim, Enum.TextXAlignment.Right).Position = UDim2.new(1, -24, 0, 0)
+    local chosenPet = nil
+
+    local lblKg = lbl(panel, "KG Threshold", 12, C.textDim)
+    lblKg.Position = UDim2.new(0, 4, 0, 354); lblKg.Size = UDim2.new(0.4, 0, 0, 30)
+    local kgBox = mk("TextBox", {
+        Size = UDim2.new(0.35, -4, 0, 30), Position = UDim2.new(0.4, 4, 0, 354),
+        BackgroundColor3 = C.input, Text = "0", Font = FONT, TextSize = 13, TextColor3 = C.text,
+        TextXAlignment = Enum.TextXAlignment.Center, ClearTextOnFocus = false, Parent = content })
+    corner(kgBox, 7); stroke(kgBox, C.border, 1)
+    local addBtn = mk("TextButton", {
+        Size = UDim2.new(0.25, -4, 0, 30), Position = UDim2.new(0.75, 4, 0, 354),
+        BackgroundColor3 = C.card, Text = "+ Tambah", Font = FONT_SB, TextSize = 11,
+        TextColor3 = C.text, AutoButtonColor = false, Parent = content })
+    corner(addBtn, 7); stroke(addBtn, C.border, 1)
+    addBtn.MouseButton1Click:Connect(function()
+        if not chosenPet then return end
+        local kg = tonumber(kgBox.Text) or 0
+        config.sellRules[chosenPet] = { action = "sell", kg = kg }
+        refreshRules()
+    end)
+
+    -- toggle Auto Sell + tombol Sell Sekarang
+    local togRow = mk("Frame", {
+        Size = UDim2.new(1, -8, 0, 28), Position = UDim2.new(0, 4, 0, 390),
+        BackgroundTransparency = 1, Parent = content })
+    lbl(togRow, "Auto Sell", 12, C.textDim).Size = UDim2.new(0.5, 0, 1, 0)
+    local tog = mk("TextButton", {
+        Size = UDim2.new(0, 44, 0, 22), Position = UDim2.new(0, 96, 0.5, -11),
+        BackgroundColor3 = C.input, Text = "", AutoButtonColor = false, Parent = togRow })
+    corner(tog, 11); stroke(tog, C.border, 1)
+    local knob = mk("Frame", { Size = UDim2.new(0, 16, 0, 16), Position = UDim2.new(0, 3, 0.5, -8),
+        BackgroundColor3 = C.textDim, Parent = tog })
+    corner(knob, 8)
+    local function refreshTog()
+        local on = config.autoSell
+        knob.Position = UDim2.new(on and 1 or 0, on and -19 or 3, 0.5, -8)
+        knob.BackgroundColor3 = on and C.accent or C.textDim
+    end
+    tog.MouseButton1Click:Connect(function() config.autoSell = not config.autoSell; refreshTog() end)
+    refreshTog()
+    local sellNowBtn = mk("TextButton", {
+        Size = UDim2.new(0, 130, 0, 26), Position = UDim2.new(1, -130, 0, 1),
+        BackgroundColor3 = C.card, Text = "Sell Sekarang", Font = FONT_SB, TextSize = 11,
+        TextColor3 = C.text, AutoButtonColor = false, Parent = togRow })
+    corner(sellNowBtn, 7); stroke(sellNowBtn, C.border, 1)
+    sellNowBtn.MouseButton1Click:Connect(function()
+        sellNowBtn.Text = "menjual…"
+        task.spawn(function() local n = doAutoSell(); task.wait(0.2); sellNowBtn.Text = "Terjual: "..n; task.wait(1.2); sellNowBtn.Text = "Sell Sekarang" end)
+    end)
+
+    -- overlay pilih jenis pet (dari PET_LIST 433)
+    local pOverlay = mk("Frame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = C.bg, BackgroundTransparency = 0.1,
+        Visible = false, ZIndex = 40, Parent = panel })
+    local pTitle = lbl(pOverlay, "Pilih Jenis Pet", 13, C.text)
+    pTitle.Font = FONT_B; pTitle.Position = UDim2.new(0, 4, 0, 2)
+    pTitle.Size = UDim2.new(0.6, 0, 0, 22); pTitle.ZIndex = 41
+    local pClose = mk("TextButton", {
+        Size = UDim2.new(0, 60, 0, 22), Position = UDim2.new(1, -64, 0, 2),
+        BackgroundColor3 = C.card, Text = "Tutup", Font = FONT_SB, TextSize = 11,
+        TextColor3 = C.text, AutoButtonColor = false, ZIndex = 41, Parent = pOverlay })
+    corner(pClose, 6); stroke(pClose, C.border, 1)
+    local pSearch = mk("TextBox", {
+        Size = UDim2.new(1, 0, 0, 30), Position = UDim2.new(0, 0, 0, 28),
+        BackgroundColor3 = C.input, Text = "", PlaceholderText = "cari pet…",
+        PlaceholderColor3 = C.textMute, Font = FONT, TextSize = 13, TextColor3 = C.text,
+        TextXAlignment = Enum.TextXAlignment.Left, ClearTextOnFocus = false, ZIndex = 41, Parent = pOverlay })
+    corner(pSearch, 7); stroke(pSearch, C.border, 1)
+    mk("UIPadding", { PaddingLeft = UDim.new(0, 12), Parent = pSearch })
+    local pList = mk("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, -64), Position = UDim2.new(0, 0, 0, 64),
+        BackgroundColor3 = C.card, BorderSizePixel = 0, ScrollBarThickness = 4,
+        ScrollBarImageColor3 = C.line, CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 41, Parent = pOverlay })
+    corner(pList, 8); stroke(pList, C.border, 1)
+    mk("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder, Parent = pList })
+    mk("UIPadding", { PaddingTop = UDim.new(0,4), PaddingBottom = UDim.new(0,4),
+        PaddingLeft = UDim.new(0,6), PaddingRight = UDim.new(0,6), Parent = pList })
+    local pRows = {}
+    local function buildPetList(filter)
+        for _, r in ipairs(pRows) do r:Destroy() end
+        pRows = {}
+        filter = (filter or ""):lower()
+        for i, pet in ipairs(PET_LIST) do
+            if filter == "" or pet:lower():find(filter, 1, true) then
+                local row = mk("TextButton", {
+                    Size = UDim2.new(1, 0, 0, 28), BackgroundColor3 = C.cardSel,
+                    Text = "", AutoButtonColor = false, LayoutOrder = i, ZIndex = 42, Parent = pList })
+                corner(row, 5)
+                local nl = lbl(row, pet, 12, C.text)
+                nl.Position = UDim2.new(0, 12, 0, 0); nl.Size = UDim2.new(1, -16, 1, 0); nl.ZIndex = 42
+                row.MouseButton1Click:Connect(function()
+                    chosenPet = pet
+                    petDdLabel.Text = pet; petDdLabel.TextColor3 = C.text
+                    pOverlay.Visible = false
+                end)
+                table.insert(pRows, row)
+            end
+        end
+    end
+    pSearch:GetPropertyChangedSignal("Text"):Connect(function() buildPetList(pSearch.Text) end)
+    petDd.MouseButton1Click:Connect(function() pOverlay.Visible = true; buildPetList("") end)
+    pClose.MouseButton1Click:Connect(function() pOverlay.Visible = false end)
+
+    refreshRules()
+
+
+    tabPanels["Config"] = panel
+    return panel
+end
+
+-- ============ PANEL FRUIT (baris collapsible, mirip Node Hub MISC) ============
+local function makeFruitPanel()
+    local panel = mk("Frame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+        Visible = false, Parent = panelArea })
+
+    -- scroll biar muat banyak baris
+    local scroll = mk("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+        ScrollBarThickness = 3, ScrollBarImageColor3 = C.border,
+        CanvasSize = UDim2.new(0, 0, 0, 0), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Parent = panel })
+    mk("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = scroll })
+
+    -- fitur (kecuali Auto Sprinkler Other Garden)
+    local features = {
+        { key = "autoBoost",     name = "Auto Boost" },
+        { key = "autoFeed",      name = "Auto Feed (Fruit)" },
+        { key = "autoCollect",   name = "Auto Collect (Fruit)" },
+        { key = "autoSellFruit", name = "Auto Sell (Fruit)" },
+        { key = "autoSprinkler", name = "Auto Sprinkler" },
+        { key = "autoAscend",    name = "Auto Ascend" },
+    }
+    fruitData = {}
+
+    local function makeRow(feat, order)
+        local row = mk("Frame", {
+            Size = UDim2.new(1, 0, 0, 40), BackgroundColor3 = C.card,
+            BorderSizePixel = 0, ClipsDescendants = true,
+            AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = order, Parent = scroll })
+        corner(row, 8); stroke(row, C.border, 1.5)
+
+        -- header (klik buat expand)
+        local header = mk("TextButton", {
+            Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1,
+            Text = "", AutoButtonColor = false, Parent = row })
+        local nameLbl = lbl(header, feat.name, 13, C.text)
+        nameLbl.Font = FONT_SB
+        nameLbl.Position = UDim2.new(0, 14, 0, 0)
+        nameLbl.Size = UDim2.new(1, -40, 0, 40)
+        -- chevron
+        local chev = lbl(header, ">", 14, C.textDim, Enum.TextXAlignment.Right)
+        chev.Position = UDim2.new(1, -26, 0, 0)
+        chev.Size = UDim2.new(0, 16, 0, 40)
+
+        -- body (expand) — isi pengaturan + toggle ON/OFF di sini, nyusul
+        local body = mk("Frame", {
+            Size = UDim2.new(1, -20, 0, 0), Position = UDim2.new(0, 10, 0, 44),
+            BackgroundTransparency = 1, Visible = false, Parent = row })
+        local bodyLbl = lbl(body, "— pengaturan "..feat.name.." nyusul —", 11, C.textMute, Enum.TextXAlignment.Center)
+        bodyLbl.Size = UDim2.new(1, 0, 0, 30)
+
+        fruitData[feat.key] = { enabled = false, expanded = false }
+        local fd = fruitData[feat.key]
+
+        -- expand/collapse
+        header.MouseButton1Click:Connect(function()
+            fd.expanded = not fd.expanded
+            body.Visible = fd.expanded
+            chev.Text = fd.expanded and "v" or ">"
+            row.Size = fd.expanded and UDim2.new(1, 0, 0, 84) or UDim2.new(1, 0, 0, 40)
+        end)
+    end
+    for i, feat in ipairs(features) do makeRow(feat, i) end
+
+    tabPanels["Fruit"] = panel
+    return panel
+end
+
+-- ============ PANEL ALL STAT (3 kartu: TOTAL / EGG / SEAL %) ============
+local function makeStatPanel()
+    local panel = mk("Frame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1,
+        Visible = false, Parent = panelArea })
+
+    -- baris filter (dropdown jenis pet & egg) — placeholder tombol
+    local filterRow = mk("Frame", {
+        Size = UDim2.new(1, 0, 0, 32), BackgroundTransparency = 1, Parent = panel })
+    local function filterBtn(txt, x, w)
+        local b = mk("TextButton", {
+            Size = UDim2.new(w, -4, 1, 0), Position = UDim2.new(x, x > 0 and 4 or 0, 0, 0),
+            BackgroundColor3 = C.card, Text = "", AutoButtonColor = false, Parent = filterRow })
+        corner(b, 7); stroke(b, C.border, 1.5)
+        local l = lbl(b, txt, 12, C.text)
+        l.Position = UDim2.new(0, 12, 0, 0); l.Size = UDim2.new(1, -28, 1, 0)
+        local ch = lbl(b, "v", 11, C.textDim, Enum.TextXAlignment.Right)
+        ch.Position = UDim2.new(1, -22, 0, 0); ch.Size = UDim2.new(0, 14, 1, 0)
+        return b
+    end
+    filterBtn("Jenis Pet: Semua", 0, 0.5)
+    filterBtn("Jenis Egg: Semua", 0.5, 0.5)
+
+    -- 3 kartu stat
+    local cardRow = mk("Frame", {
+        Size = UDim2.new(1, 0, 0, 90), Position = UDim2.new(0, 0, 0, 42),
+        BackgroundTransparency = 1, Parent = panel })
+    local function statCard(hdr, x, valTxt, subTxt)
+        local col = mk("Frame", {
+            Size = UDim2.new(0.3333, -6, 1, 0), Position = UDim2.new(x, x > 0 and 3 or 0, 0, 0),
+            BackgroundColor3 = C.card, BorderSizePixel = 0, Parent = cardRow })
+        corner(col, 8); stroke(col, C.border, 1.5)
+        local h = lbl(col, hdr, 12, C.textDim, Enum.TextXAlignment.Center)
+        h.Position = UDim2.new(0, 0, 0, 8); h.Size = UDim2.new(1, 0, 0, 16)
+        local v = lbl(col, valTxt, 26, C.text, Enum.TextXAlignment.Center)
+        v.Font = FONT_B; v.Position = UDim2.new(0, 0, 0, 28); v.Size = UDim2.new(1, 0, 0, 34)
+        local s = lbl(col, subTxt, 10, C.textMute, Enum.TextXAlignment.Center)
+        s.Position = UDim2.new(0, 0, 1, -20); s.Size = UDim2.new(1, 0, 0, 14)
+        return { val = v, sub = s }
+    end
+    statCard("TOTAL",  0,      "—", "(semua)")
+    statCard("EGG",    0.3333, "—", "(semua)")
+    statCard("SEAL %", 0.6666, "—", "(auto)")
+
+    -- catatan
+    local note = lbl(panel, "Statistik nyusul — diisi saat fitur jalan", 11, C.textMute, Enum.TextXAlignment.Center)
+    note.Position = UDim2.new(0, 0, 0, 144); note.Size = UDim2.new(1, 0, 0, 20)
+
+    tabPanels["All Stat"] = panel
+    return panel
+end
+
+-- ============ PET PICKER (panel terpisah, muncul saat tombol dipencet) ============
+-- placeholder fungsi — nanti diisi: list pet dari backpack/container, multi-select
+openPetPicker = function(tabName)
+    -- overlay
+    local overlay = mk("Frame", {
+        Size = UDim2.new(1, 0, 1, 0), BackgroundColor3 = Color3.fromRGB(0,0,0),
+        BackgroundTransparency = 0.45, ZIndex = 50, Parent = main })
+    local pick = mk("Frame", {
+        Size = UDim2.new(0, 420, 0, 360),
+        Position = UDim2.new(0.5, -210, 0.5, -180),
+        BackgroundColor3 = C.panel, ZIndex = 51, Parent = overlay })
+    corner(pick, 12); stroke(pick, C.border, 1)
+    -- header
+    local hd = lbl(pick, teamData[tabName].label, 13, C.text)
+    hd.Font = FONT_B; hd.ZIndex = 52
+    hd.Position = UDim2.new(0, 16, 0, 12); hd.Size = UDim2.new(1, -60, 0, 22)
+    local closeBtn = mk("TextButton", {
+        Size = UDim2.new(0, 28, 0, 28), Position = UDim2.new(1, -38, 0, 10),
+        BackgroundTransparency = 1, Text = "X", Font = FONT_B, TextSize = 14,
+        TextColor3 = C.textDim, ZIndex = 52, Parent = pick })
+    -- search
+    local search = mk("TextBox", {
+        Size = UDim2.new(1, -32, 0, 32), Position = UDim2.new(0, 16, 0, 44),
+        BackgroundColor3 = C.input, PlaceholderText = "Search pet...",
+        Text = "", Font = FONT, TextSize = 12, TextColor3 = C.text,
+        PlaceholderColor3 = C.textMute, TextXAlignment = Enum.TextXAlignment.Left,
+        ClearTextOnFocus = false, ZIndex = 52, Parent = pick })
+    corner(search, 7); stroke(search, C.border, 1)
+    mk("UIPadding", { PaddingLeft = UDim.new(0, 12), Parent = search })
+    -- list (scroll)
+    local list = mk("ScrollingFrame", {
+        Size = UDim2.new(1, -32, 1, -130), Position = UDim2.new(0, 16, 0, 84),
+        BackgroundTransparency = 1, ScrollBarThickness = 3,
+        ScrollBarImageColor3 = C.border, CanvasSize = UDim2.new(0,0,0,0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y, ZIndex = 52, Parent = pick })
+    mk("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list })
+    local statusLbl = lbl(list, "Memuat pet...", 12, C.textMute, Enum.TextXAlignment.Center)
+    statusLbl.Size = UDim2.new(1, 0, 0, 40); statusLbl.ZIndex = 52
+    -- done btn
+    local doneBtn = mk("TextButton", {
+        Size = UDim2.new(1, -32, 0, 32), Position = UDim2.new(0, 16, 1, -42),
+        BackgroundColor3 = C.accent, Text = "DONE", Font = FONT_B, TextSize = 12,
+        TextColor3 = Color3.fromRGB(17,17,17), ZIndex = 52, Parent = pick })
+    corner(doneBtn, 7)
+
+    local sel = teamData[tabName].selected   -- set uuid -> true (persist di teamData)
+    local rows = {}
+
+    local function refreshPickLabel()
+        local cnt = 0
+        for _ in pairs(sel) do cnt = cnt + 1 end
+        teamData[tabName].pickLbl.Text = teamData[tabName].label .. "  (" .. cnt .. " dipilih)"
+    end
+
+    local function buildList(filter)
+        for _, r in ipairs(rows) do r:Destroy() end
+        rows = {}
+        local allPets = PetDetect.listBackpackPets()
+        -- FILTER: pet favorit ATAU yang udah dipilih (biar pet di garden gak hilang dari pilihan)
+        local pets = {}
+        for _, p in ipairs(allPets) do
+            if p.fav or sel[p.uuid] then table.insert(pets, p) end
+        end
+        if #pets == 0 then
+            statusLbl.Text = (#allPets == 0)
+                and "Gak ada pet (container belum ke-scan)"
+                or "Gak ada pet FAVORIT (favoritin dulu pet di game)"
+            statusLbl.Visible = true
+            return
+        end
+        -- SORT: prioritas tipe dulu (per tim), lalu KG terbesar
+        table.sort(pets, function(a, b)
+            local ra, rb = PetDetect.priorityRank(tabName, a.name), PetDetect.priorityRank(tabName, b.name)
+            if ra ~= rb then return ra < rb end
+            local ka, kb = a.dispKg or 0, b.dispKg or 0
+            if ka ~= kb then return ka > kb end       -- KG terbesar dulu
+            return (a.name or "") < (b.name or "")
+        end)
+        statusLbl.Visible = false
+        filter = (filter or ""):lower()
+        local shown = 0
+        for i, p in ipairs(pets) do
+            -- label: [Mut] Nama | X.XX KG | Lv N
+            local disp = (p.mut and ("["..p.mut.."] ") or "") .. p.name
+            local meta = ""
+            if p.dispKg then meta = meta .. string.format("%.2f KG", p.dispKg) end
+            if p.level then meta = meta .. (meta ~= "" and " | " or "") .. "Lv " .. tostring(p.level) end
+            if meta == "" then meta = "(no data)" end
+            local full = disp .. "  |  " .. meta
+            if filter == "" or disp:lower():find(filter, 1, true) then
+                shown = shown + 1
+                local row = mk("TextButton", {
+                    Size = UDim2.new(1, 0, 0, 34), BackgroundColor3 = C.card,
+                    Text = "", AutoButtonColor = false, LayoutOrder = i, ZIndex = 52, Parent = list })
+                corner(row, 7)
+                local rst = stroke(row, sel[p.uuid] and C.borderSel or C.border, 1.5)
+                local star = lbl(row, sel[p.uuid] and "★" or "☆", 13,
+                    sel[p.uuid] and C.text or C.textDim)
+                star.Position = UDim2.new(0, 10, 0, 0); star.Size = UDim2.new(0, 18, 1, 0); star.ZIndex = 52
+                local nl = lbl(row, full, 11, sel[p.uuid] and C.text or C.textDim)
+                nl.Position = UDim2.new(0, 32, 0, 0); nl.Size = UDim2.new(1, -40, 1, 0); nl.ZIndex = 52
+                nl.TextTruncate = Enum.TextTruncate.AtEnd
+                row.MouseButton1Click:Connect(function()
+                    if sel[p.uuid] then sel[p.uuid] = nil else sel[p.uuid] = true end
+                    local on = sel[p.uuid]
+                    rst.Color = on and C.borderSel or C.border
+                    star.Text = on and "★" or "☆"
+                    star.TextColor3 = on and C.text or C.textDim
+                    nl.TextColor3 = on and C.text or C.textDim
+                    refreshPickLabel()
+                end)
+                table.insert(rows, row)
+            end
+        end
+        if shown == 0 then
+            statusLbl.Text = "Gak ada hasil buat '" .. filter .. "'"
+            statusLbl.Visible = true
+        end
+    end
+
+    -- scan container dulu (async biar gak nge-freeze), lalu build
+    task.spawn(function()
+        PetDetect.rebuild()
+        buildList("")
+    end)
+    search:GetPropertyChangedSignal("Text"):Connect(function()
+        buildList(search.Text)
+    end)
+
+    local function close()
+        overlay:Destroy()
+        refreshPickLabel()
+        if teamData[tabName].refreshSummary then teamData[tabName].refreshSummary() end
+        for _, tn in ipairs({"Reduce Tim", "Hatch Tim", "Sell Tim"}) do
+            if teamData[tn] and teamData[tn].refreshPct then teamData[tn].refreshPct() end
+        end
+    end
+    closeBtn.MouseButton1Click:Connect(close)
+    doneBtn.MouseButton1Click:Connect(close)
+end
+
+-- ============ BUILD PANELS ============
+makeTeamPanel("Reduce Tim")
+makeTeamPanel("Hatch Tim")
+makeTeamPanel("Sell Tim")
+makeConfigPanel()
+makeFruitPanel()
+makeStatPanel()
+-- set default tab visible
+tabPanels["Reduce Tim"].Visible = true
+do
+    local d = tabBtns["Reduce Tim"]
+    d.btn.BackgroundColor3 = C.card; d.label.TextColor3 = C.text; d.label.Font = FONT_B
+end
+-- hitung persen awal (scan container dulu)
+task.spawn(function()
+    PetDetect.rebuild()
+    if teamData["Reduce Tim"].refreshPct then teamData["Reduce Tim"].refreshPct() end
+end)
+
+print("[HactTelur] UI loaded ("..VERSION..") — fungsi auto-hatch/swap nyusul")
