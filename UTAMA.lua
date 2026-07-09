@@ -3392,7 +3392,7 @@ local function buildAutoGift()
 end
 
 -- ============================================
--- TAB 6: AUTO HATCH (terpisah)
+-- TAB 6: AUTO HATCH (terpisah) – UI FIX
 -- ============================================
 local function buildHatchTab()
     for _,c in pairs(areas[6]:GetChildren()) do
@@ -3404,14 +3404,15 @@ local function buildHatchTab()
 
     M78.eggService = M78.eggService or (RS:FindFirstChild("GameEvents") and RS.GameEvents:FindFirstChild("PetEggService"))
     M78.autoHatch = M78.autoHatch or false
-    M78.eggName = M78.eggName or "Paradise Egg"
+    M78.eggName = M78.eggName or "Uncommon Egg"
     M78.eggCount = M78.eggCount or 8
     M78.eggSpacing = M78.eggSpacing or 7
     M78.hatchRunning = false
     M78.hatchCycleCount = 0
 
+    -- Sinkronisasi dengan data tersimpan
     d.autoHatch = d.autoHatch or false
-    d.eggName = d.eggName or "Paradise Egg"
+    d.eggName = d.eggName or "Uncommon Egg"
     d.eggCount = d.eggCount or 8
     d.eggSpacing = d.eggSpacing or 7
     M78.autoHatch = d.autoHatch
@@ -3419,6 +3420,33 @@ local function buildHatchTab()
     M78.eggCount = d.eggCount
     M78.eggSpacing = d.eggSpacing
 
+    -- ===== Ambil daftar egg dari GitHub =====
+    local eggListCache = nil
+    local eggListCacheTime = 0
+    local function getEggNamesFromGitHub()
+        local now = tick()
+        if eggListCache and (now - eggListCacheTime) < 300 then return eggListCache end
+        local url = "https://raw.githubusercontent.com/wardz25/updater/refs/heads/main/pets.json"
+        local ok, data = pcall(function() return game:HttpGet(url) end)
+        if ok and data then
+            local parsed = HS:JSONDecode(data)
+            if type(parsed) == "table" then
+                local eggNames = {}
+                for _, pet in ipairs(parsed) do
+                    if pet.egg and pet.egg ~= "" then eggNames[pet.egg] = true end
+                end
+                local result = {}
+                for name in pairs(eggNames) do table.insert(result, name) end
+                table.sort(result)
+                eggListCache = result
+                eggListCacheTime = now
+                return result
+            end
+        end
+        return {"Common Egg","Uncommon Egg","Rare Egg","Legendary Egg","Mythical Egg","Paradise Egg","Oasis Egg","Dinosaur Egg","Primal Egg","Zen Egg","Gourmet Egg"}
+    end
+
+    -- ===== Fungsi HATCH ===== (sama seperti sebelumnya)
     M78.getFarmCF = function()
         local farm = workspace:FindFirstChild("Farm")
         if farm then
@@ -3664,50 +3692,19 @@ local function buildHatchTab()
         end
     end
 
-    -- Ambil daftar egg dari GitHub (cache 5 menit)
-local eggListCache = nil
-local eggListCacheTime = 0
+    -- ===== UI HATCH – RAPI =====
 
-local function getEggNamesFromGitHub()
-    local now = tick()
-    if eggListCache and (now - eggListCacheTime) < 300 then
-        return eggListCache
-    end
-    local url = "https://raw.githubusercontent.com/wardz25/updater/refs/heads/main/pets.json"
-    local ok, data = pcall(function()
-        return game:HttpGet(url)
-    end)
-    if ok and data then
-        local parsed = HS:JSONDecode(data)
-        if type(parsed) == "table" then
-            -- Ambil semua nama pet dari JSON, lalu ambil egg-nya
-            local eggNames = {}
-            for _, pet in ipairs(parsed) do
-                if pet.egg and pet.egg ~= "" then
-                    eggNames[pet.egg] = true
-                end
-            end
-            -- Konversi ke list
-            local result = {}
-            for name in pairs(eggNames) do
-                table.insert(result, name)
-            end
-            table.sort(result)
-            eggListCache = result
-            eggListCacheTime = now
-            return eggListCache
-        end
-    end
-    -- Fallback hardcoded
-    return {"Common Egg", "Uncommon Egg", "Rare Egg", "Legendary Egg", "Mythical Egg", "Paradise Egg", "Oasis Egg", "Dinosaur Egg", "Primal Egg", "Zen Egg", "Gourmet Egg", "Coastal Egg"}
-end
-
-    -- ===== UI HATCH =====
+    -- HEADER
     local header = mk("Frame", {Size=UDim2.new(1,0,0,32), BackgroundColor3=C.Panel, BorderSizePixel=0, LayoutOrder=0, Parent=areas[6]})
     corner(header,7) stroke(header,C.Teal,1.2)
-    lbl(header, "AUTO HATCH", 13, C.Teal).Size = UDim2.new(1,-20,1,0)
-    lbl(header, "🥚", 16, C.Gold, Enum.TextXAlignment.Right).Size = UDim2.new(0,30,1,0)
+    local hdrLbl = lbl(header, "AUTO HATCH", 13, C.Teal, Enum.TextXAlignment.Left)
+    hdrLbl.Size = UDim2.new(1, -40, 1, 0)
+    hdrLbl.Position = UDim2.new(0, 10, 0, 0)
+    local emoji = lbl(header, "🥚", 16, C.Gold, Enum.TextXAlignment.Right)
+    emoji.Size = UDim2.new(0, 30, 1, 0)
+    emoji.Position = UDim2.new(1, -34, 0, 0)
 
+    -- SETTINGS CARD
     local cfgCard = mk("Frame", {Size=UDim2.new(1,0,0,0), AutomaticSize=Enum.AutomaticSize.Y, BackgroundColor3=C.Panel, BorderSizePixel=0, LayoutOrder=1, Parent=areas[6]})
     corner(cfgCard,7) stroke(cfgCard,C.Gold,1.2)
     mk("UIListLayout", {SortOrder=Enum.SortOrder.LayoutOrder, Padding=UDim.new(0,3), Parent=cfgCard})
@@ -3715,41 +3712,36 @@ end
 
     lbl(cfgCard, "Hatch Settings", 11, C.Gold).Size = UDim2.new(1,0,0,14)
 
-    -- Egg Name
-local enRow = mk("Frame", {Size=UDim2.new(1,0,0,26), BackgroundColor3=C.Card, BorderSizePixel=0, LayoutOrder=1, Parent=cfgCard})
-corner(enRow,5) stroke(enRow,C.Dim,1)
-lbl(enRow, "Egg Name", 11, C.Gray).Size = UDim2.new(0.4,0,1,0)
+    -- Egg Name – menggunakan tombol picker dari GitHub
+    local enRow = mk("Frame", {Size=UDim2.new(1,0,0,26), BackgroundColor3=C.Card, BorderSizePixel=0, LayoutOrder=1, Parent=cfgCard})
+    corner(enRow,5) stroke(enRow,C.Dim,1)
+    lbl(enRow, "Egg Name", 11, C.Gray).Size = UDim2.new(0.4,0,1,0)
 
-local enBtn = btn(enRow, M78.eggName, 11, C.TDim, C.Teal)
-enBtn.Size = UDim2.new(0,120,0,20)
-enBtn.Position = UDim2.new(1,-128,0.5,-10)
-enBtn.TextXAlignment = Enum.TextXAlignment.Center
-corner(enBtn,5) stroke(enBtn,C.Teal,1)
+    local enBtn = btn(enRow, M78.eggName, 11, C.TDim, C.Teal)
+    enBtn.Size = UDim2.new(0,120,0,20)
+    enBtn.Position = UDim2.new(1,-128,0.5,-10)
+    enBtn.TextXAlignment = Enum.TextXAlignment.Center
+    corner(enBtn,5) stroke(enBtn,C.Teal,1)
 
-enBtn.MouseButton1Click:Connect(function()
-    local eggNames = getEggNamesFromGitHub()
-    local items = {}
-    for _, name in ipairs(eggNames) do
-        table.insert(items, {
-            value = name,
-            label = name,
-            selected = (name == M78.eggName)
-        })
-    end
-    showPickerModal({
-        title = "Pilih Egg Name (dari GitHub)",
-        items = items,
-        multi = false,
-        onSelect = function(value)
-            if value and value ~= "" then
-                M78.eggName = value
-                d.eggName = value
-                save()
-                enBtn.Text = value
-            end
+    enBtn.MouseButton1Click:Connect(function()
+        local eggNames = getEggNamesFromGitHub()
+        local items = {}
+        for _, name in ipairs(eggNames) do
+            table.insert(items, {value=name, label=name, selected=(name == M78.eggName)})
         end
-    })
-end)
+        showPickerModal({
+            title = "Pilih Egg Name (dari GitHub)",
+            items = items, multi = false,
+            onSelect = function(value)
+                if value and value ~= "" then
+                    M78.eggName = value
+                    d.eggName = value
+                    save()
+                    enBtn.Text = value
+                end
+            end
+        })
+    end)
 
     -- Egg Count
     local ecRow = mk("Frame", {Size=UDim2.new(1,0,0,26), BackgroundColor3=C.Card, BorderSizePixel=0, LayoutOrder=2, Parent=cfgCard})
@@ -3785,21 +3777,20 @@ end)
         end
     end)
 
-    -- Toggle Auto Hatch
-    local togRow = mk("Frame", {Size=UDim2.new(1,0,0,32), BackgroundColor3=C.Card, BorderSizePixel=0, LayoutOrder=4, Parent=areas[6]})
+    -- AUTO HATCH TOGGLE (manual row agar lebih rapi)
+    local togRow = mk("Frame", {Size=UDim2.new(1,0,0,42), BackgroundColor3=C.Card, BorderSizePixel=0, LayoutOrder=4, Parent=areas[6]})
     corner(togRow,6) local togStroke=stroke(togRow,C.Dim,1.1)
-    lbl(togRow, "Auto Hatch", 11, C.White).Size = UDim2.new(0.65,0,0,16)
-    lbl(togRow, "Place, wait, hatch, fav", 10, C.Dim).Size = UDim2.new(0.75,0,0,11)
-    local tog = btn(togRow, M78.autoHatch and "ON" or "OFF", 11, M78.autoHatch and C.TDim or C.Panel, M78.autoHatch and C.Teal or C.Gray)
-    tog.Size = UDim2.new(0,44,0,20) tog.Position = UDim2.new(1,-50,0.5,-10)
-    local togStroke2 = stroke(tog, M78.autoHatch and C.Teal or C.Dim, 1.1)
+    local togLbl = lbl(togRow, "Auto Hatch", 12, C.White)
+    togLbl.Size = UDim2.new(0.65,0,0,18)
+    togLbl.Position = UDim2.new(0,10,0,4)
+    local descLbl = lbl(togRow, "Place, wait, hatch, fav", 10, C.Dim)
+    descLbl.Size = UDim2.new(0.75,0,0,14)
+    descLbl.Position = UDim2.new(0,10,0,22)
 
-    local hatchStatusLbl = lbl(areas[6], "Status: Idle", 11, C.Gray, Enum.TextXAlignment.Center)
-    hatchStatusLbl.Size = UDim2.new(1, -10, 0, 20)
-    hatchStatusLbl.Position = UDim2.new(0, 5, 1, -28)
-    hatchStatusLbl.BackgroundColor3 = C.Panel
-    hatchStatusLbl.BackgroundTransparency = 0
-    corner(hatchStatusLbl,5) stroke(hatchStatusLbl,C.Dim,1)
+    local tog = btn(togRow, M78.autoHatch and "ON" or "OFF", 12, M78.autoHatch and C.TDim or C.Panel, M78.autoHatch and C.Teal or C.Gray)
+    tog.Size = UDim2.new(0,48,0,24)
+    tog.Position = UDim2.new(1,-56,0.5,-12)
+    local togStroke2 = stroke(tog, M78.autoHatch and C.Teal or C.Dim, 1.2)
 
     tog.MouseButton1Click:Connect(function()
         M78.autoHatch = not M78.autoHatch
@@ -3823,11 +3814,20 @@ end)
         end
     end)
 
-    -- Force run once button
+    -- STATUS LABEL
+    local hatchStatusLbl = lbl(areas[6], "Status: Idle", 11, C.Gray, Enum.TextXAlignment.Center)
+    hatchStatusLbl.Size = UDim2.new(1, -10, 0, 22)
+    hatchStatusLbl.Position = UDim2.new(0, 5, 1, -58)
+    hatchStatusLbl.BackgroundColor3 = C.Panel
+    hatchStatusLbl.BackgroundTransparency = 0
+    corner(hatchStatusLbl,5) stroke(hatchStatusLbl,C.Dim,1)
+
+    -- RUN ONCE BUTTON
     local runOnce = btn(areas[6], "Run Once", 11, C.TDim, C.Teal)
-    runOnce.Size = UDim2.new(1, -10, 0, 24)
-    runOnce.Position = UDim2.new(0, 5, 1, -52)
+    runOnce.Size = UDim2.new(1, -10, 0, 26)
+    runOnce.Position = UDim2.new(0, 5, 1, -30)
     stroke(runOnce, C.Teal, 1.2)
+
     runOnce.MouseButton1Click:Connect(function()
         if M78.hatchRunning then return end
         hatchStatusLbl.Text = "🚀 Running once..."
