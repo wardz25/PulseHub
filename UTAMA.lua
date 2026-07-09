@@ -1078,9 +1078,9 @@ local function makeSidebarBtn(name, idx)
     return b
 end
 local upLvlBtn = makeSidebarBtn("UP KG", 1)
-local hatchBtn = makeSidebarBtn("HATCH", 2)   -- tambahkan ini
-local miscBtn = makeSidebarBtn("Misc", 3)     -- ubah dari 2 ke 3
-local giftBtn = makeSidebarBtn("Auto Gift", 4) -- ubah dari 3 ke 4
+local hatchBtn = makeSidebarBtn("HATCH", 2)   -- sudah ada
+local miscBtn = makeSidebarBtn("Misc", 3)
+local giftBtn = makeSidebarBtn("Auto Gift", 4)
 
 local content=mk("Frame",{Size=UDim2.new(1,-(SIDEBAR_W+15),1,-34),Position=UDim2.new(0,SIDEBAR_W+10,0,34),BackgroundTransparency=1,Parent=main})
 local tabBar=mk("Frame",{Size=UDim2.new(1,-10,0,26),Position=UDim2.new(0,5,0,4),BackgroundTransparency=1,Parent=content})
@@ -1319,8 +1319,9 @@ local function switchSection(idx)
 end
 
 upLvlBtn.MouseButton1Click:Connect(function() switchSection(1) end)
-miscBtn.MouseButton1Click:Connect(function() switchSection(2) end)
-giftBtn.MouseButton1Click:Connect(function() switchSection(3) end)
+hatchBtn.MouseButton1Click:Connect(function() switchSection(2) end)
+miscBtn.MouseButton1Click:Connect(function() switchSection(3) end)
+giftBtn.MouseButton1Click:Connect(function() switchSection(4) end)
 
 for i,name in ipairs(tabNames) do
     local b=btn(tabBar,name,10,C.Card,C.Gray)
