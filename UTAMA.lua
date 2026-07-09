@@ -1310,8 +1310,8 @@ local function switchSection(idx)
         -- HATCH
         if areas[6] then areas[6].Visible = true end
     elseif idx == 3 then
-        -- Misc
-        miscGroup.Visible = true
+    -- Misc
+        if miscGroup then miscGroup.Visible = true end
     elseif idx == 4 then
         -- Auto Gift
         if areas[5] then areas[5].Visible = true end
