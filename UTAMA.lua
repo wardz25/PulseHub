@@ -3100,6 +3100,72 @@ local function buildAutoGift()
         if c:IsA("Frame") or c:IsA("TextLabel") or c:IsA("TextButton") then c:Destroy() end
     end
 
+    local ivRow=mk("Frame",{Size=UDim2.new(1,0,0,26),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=0,Parent=areas[5]})
+    corner(ivRow,6) stroke(ivRow,C.Dim,1.1)
+    lbl(ivRow,"Interval Send (dtk):",11,C.Gray).Size=UDim2.new(0.6,0,1,0)
+    local ivBox=mk("TextBox",{Size=UDim2.new(0,50,0,20),Position=UDim2.new(1,-56,0.5,-10),BackgroundColor3=C.Panel,Text=tostring(sendInterval),TextColor3=C.White,Font=Enum.Font.GothamBold,TextSize=14,TextScaled=false,TextXAlignment=Enum.TextXAlignment.Center,ClearTextOnFocus=false,Parent=ivRow})
+    corner(ivBox,5) stroke(ivBox,C.Dim,1)
+    ivBox:GetPropertyChangedSignal("Text"):Connect(function() local v=tonumber(ivBox.Text) if v then sendInterval=math.max(5,v) save() end end)
+
+    local function makeCollapsible(title,layoutOrder)
+        local hdr=mk("Frame",{Size=UDim2.new(1,0,0,32),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=layoutOrder,Parent=areas[5]})
+        corner(hdr,7) local hdrStroke=stroke(hdr,C.Dim,1.2)
+        local titleLbl=lbl(hdr,title,13,C.White) titleLbl.Size=UDim2.new(0.85,0,1,0) titleLbl.Position=UDim2.new(0,12,0,0) titleLbl.Font=Enum.Font.GothamBold
+        local arrow=lbl(hdr,"v",13,C.Teal,Enum.TextXAlignment.Right) arrow.Size=UDim2.new(0,24,1,0) arrow.Position=UDim2.new(1,-30,0,0)
+        local cover=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,Parent=hdr})
+        local content=mk("Frame",{Size=UDim2.new(1,0,0,0),BackgroundColor3=C.Panel,BorderSizePixel=0,Visible=false,LayoutOrder=layoutOrder+1,ClipsDescendants=true,AutomaticSize=Enum.AutomaticSize.None,Parent=areas[5]})
+        corner(content,7) stroke(content,C.Dim,1)
+        mk("UIListLayout",{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,3),Parent=content})
+        mk("UIPadding",{PaddingTop=UDim.new(0,5),PaddingLeft=UDim.new(0,5),PaddingRight=UDim.new(0,5),PaddingBottom=UDim.new(0,5),Parent=content})
+        local open=false
+        cover.MouseButton1Click:Connect(function()
+            open=not open
+            content.Visible=open
+            if open then
+                content.AutomaticSize=Enum.AutomaticSize.Y
+                arrow.Text="^" hdrStroke.Color=C.Teal
+            else
+                content.AutomaticSize=Enum.AutomaticSize.None
+                content.Size=UDim2.new(1,0,0,0)
+                arrow.Text="v" hdrStroke.Color=C.Dim
+            end
+        end)
+        return content
+    end
+
+    local function buildGiftContent(slotIdx,parent)
+        local slot=giftSlots[slotIdx]
+
+        -- v12.79: Target picker -> modal popup
+        -- v13.00: multi-select target
+        local function trText()
+            local n = #slot.targets
+            if n == 0 then return "(klik pilih)" end
+            if n == 1 then return slot.targets[1] end
+            return slot.targets[1].." +"..(n-1).." lainnya"
+        end
+        local trRow=mk("Frame",{Size=UDim2.new(1,0,0,32),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=1,Parent=parent})
+        corner(trRow,6) local trStroke=stroke(trRow,C.Dim,1.1)
+        local trLbl=lbl(trRow,"Target: "..trText(),13,C.White) trLbl.Size=UDim2.new(0.85,0,1,0) trLbl.Position=UDim2.new(0,10,0,0)
+        local trIcon=lbl(trRow,">",14,C.Teal,Enum.TextXAlignment.Right) trIcon.Size=UDim2.new(0,20,1,0) trIcon.Position=UDim2.new(1,-24,0,0)
+        local trCover=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,Parent=trRow})
+        local function inTargets(name)
+            for _,t in ipairs(slot.targets) do if t == name then return true end end
+            return false
+        end
+        trCover.MouseButton1Click:Connect(function()
+            local items={}
+            local inHistorySet={}
+            for _,h in ipairs(giftTargetHistory) do
+                inHistorySet[h]=true
+                table.insert(items,{
+                    value=h,
+                    label=string.char(0xE2,0xAD,0x90).." "..h.." (riwayat)",
+                    selected=inTargets(h),
+                    removable=true,
+                })
+            end
+
 -- ============================================
 -- TAB 6: AUTO HATCH (terpisah)
 -- ============================================
@@ -3490,71 +3556,6 @@ local function buildHatchTab()
     end)
 end
 
-    local ivRow=mk("Frame",{Size=UDim2.new(1,0,0,26),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=0,Parent=areas[5]})
-    corner(ivRow,6) stroke(ivRow,C.Dim,1.1)
-    lbl(ivRow,"Interval Send (dtk):",11,C.Gray).Size=UDim2.new(0.6,0,1,0)
-    local ivBox=mk("TextBox",{Size=UDim2.new(0,50,0,20),Position=UDim2.new(1,-56,0.5,-10),BackgroundColor3=C.Panel,Text=tostring(sendInterval),TextColor3=C.White,Font=Enum.Font.GothamBold,TextSize=14,TextScaled=false,TextXAlignment=Enum.TextXAlignment.Center,ClearTextOnFocus=false,Parent=ivRow})
-    corner(ivBox,5) stroke(ivBox,C.Dim,1)
-    ivBox:GetPropertyChangedSignal("Text"):Connect(function() local v=tonumber(ivBox.Text) if v then sendInterval=math.max(5,v) save() end end)
-
-    local function makeCollapsible(title,layoutOrder)
-        local hdr=mk("Frame",{Size=UDim2.new(1,0,0,32),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=layoutOrder,Parent=areas[5]})
-        corner(hdr,7) local hdrStroke=stroke(hdr,C.Dim,1.2)
-        local titleLbl=lbl(hdr,title,13,C.White) titleLbl.Size=UDim2.new(0.85,0,1,0) titleLbl.Position=UDim2.new(0,12,0,0) titleLbl.Font=Enum.Font.GothamBold
-        local arrow=lbl(hdr,"v",13,C.Teal,Enum.TextXAlignment.Right) arrow.Size=UDim2.new(0,24,1,0) arrow.Position=UDim2.new(1,-30,0,0)
-        local cover=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,Parent=hdr})
-        local content=mk("Frame",{Size=UDim2.new(1,0,0,0),BackgroundColor3=C.Panel,BorderSizePixel=0,Visible=false,LayoutOrder=layoutOrder+1,ClipsDescendants=true,AutomaticSize=Enum.AutomaticSize.None,Parent=areas[5]})
-        corner(content,7) stroke(content,C.Dim,1)
-        mk("UIListLayout",{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,3),Parent=content})
-        mk("UIPadding",{PaddingTop=UDim.new(0,5),PaddingLeft=UDim.new(0,5),PaddingRight=UDim.new(0,5),PaddingBottom=UDim.new(0,5),Parent=content})
-        local open=false
-        cover.MouseButton1Click:Connect(function()
-            open=not open
-            content.Visible=open
-            if open then
-                content.AutomaticSize=Enum.AutomaticSize.Y
-                arrow.Text="^" hdrStroke.Color=C.Teal
-            else
-                content.AutomaticSize=Enum.AutomaticSize.None
-                content.Size=UDim2.new(1,0,0,0)
-                arrow.Text="v" hdrStroke.Color=C.Dim
-            end
-        end)
-        return content
-    end
-
-    local function buildGiftContent(slotIdx,parent)
-        local slot=giftSlots[slotIdx]
-
-        -- v12.79: Target picker -> modal popup
-        -- v13.00: multi-select target
-        local function trText()
-            local n = #slot.targets
-            if n == 0 then return "(klik pilih)" end
-            if n == 1 then return slot.targets[1] end
-            return slot.targets[1].." +"..(n-1).." lainnya"
-        end
-        local trRow=mk("Frame",{Size=UDim2.new(1,0,0,32),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=1,Parent=parent})
-        corner(trRow,6) local trStroke=stroke(trRow,C.Dim,1.1)
-        local trLbl=lbl(trRow,"Target: "..trText(),13,C.White) trLbl.Size=UDim2.new(0.85,0,1,0) trLbl.Position=UDim2.new(0,10,0,0)
-        local trIcon=lbl(trRow,">",14,C.Teal,Enum.TextXAlignment.Right) trIcon.Size=UDim2.new(0,20,1,0) trIcon.Position=UDim2.new(1,-24,0,0)
-        local trCover=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,Parent=trRow})
-        local function inTargets(name)
-            for _,t in ipairs(slot.targets) do if t == name then return true end end
-            return false
-        end
-        trCover.MouseButton1Click:Connect(function()
-            local items={}
-            local inHistorySet={}
-            for _,h in ipairs(giftTargetHistory) do
-                inHistorySet[h]=true
-                table.insert(items,{
-                    value=h,
-                    label=string.char(0xE2,0xAD,0x90).." "..h.." (riwayat)",
-                    selected=inTargets(h),
-                    removable=true,
-                })
-            end
             local plist={}
             for _,p in ipairs(Players:GetPlayers()) do
                 if p ~= player and not inHistorySet[p.Name] then table.insert(plist,p.Name) end
