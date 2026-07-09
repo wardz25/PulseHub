@@ -3664,6 +3664,44 @@ local function buildHatchTab()
         end
     end
 
+    -- Ambil daftar egg dari GitHub (cache 5 menit)
+local eggListCache = nil
+local eggListCacheTime = 0
+
+local function getEggNamesFromGitHub()
+    local now = tick()
+    if eggListCache and (now - eggListCacheTime) < 300 then
+        return eggListCache
+    end
+    local url = "https://raw.githubusercontent.com/wardz25/updater/refs/heads/main/pets.json"
+    local ok, data = pcall(function()
+        return game:HttpGet(url)
+    end)
+    if ok and data then
+        local parsed = HS:JSONDecode(data)
+        if type(parsed) == "table" then
+            -- Ambil semua nama pet dari JSON, lalu ambil egg-nya
+            local eggNames = {}
+            for _, pet in ipairs(parsed) do
+                if pet.egg and pet.egg ~= "" then
+                    eggNames[pet.egg] = true
+                end
+            end
+            -- Konversi ke list
+            local result = {}
+            for name in pairs(eggNames) do
+                table.insert(result, name)
+            end
+            table.sort(result)
+            eggListCache = result
+            eggListCacheTime = now
+            return eggListCache
+        end
+    end
+    -- Fallback hardcoded
+    return {"Common Egg", "Uncommon Egg", "Rare Egg", "Legendary Egg", "Mythical Egg", "Paradise Egg", "Oasis Egg", "Dinosaur Egg", "Primal Egg", "Zen Egg", "Gourmet Egg", "Coastal Egg"}
+end
+
     -- ===== UI HATCH =====
     local header = mk("Frame", {Size=UDim2.new(1,0,0,32), BackgroundColor3=C.Panel, BorderSizePixel=0, LayoutOrder=0, Parent=areas[6]})
     corner(header,7) stroke(header,C.Teal,1.2)
@@ -3678,18 +3716,40 @@ local function buildHatchTab()
     lbl(cfgCard, "Hatch Settings", 11, C.Gold).Size = UDim2.new(1,0,0,14)
 
     -- Egg Name
-    local enRow = mk("Frame", {Size=UDim2.new(1,0,0,26), BackgroundColor3=C.Card, BorderSizePixel=0, LayoutOrder=1, Parent=cfgCard})
-    corner(enRow,5) stroke(enRow,C.Dim,1)
-    lbl(enRow, "Egg Name", 11, C.Gray).Size = UDim2.new(0.4,0,1,0)
-    local enBox = mk("TextBox", {Size=UDim2.new(0,120,0,20), Position=UDim2.new(1,-128,0.5,-10), BackgroundColor3=C.Panel, Text=M78.eggName, TextColor3=C.White, Font=Enum.Font.GothamBold, TextSize=12, TextScaled=false, TextXAlignment=Enum.TextXAlignment.Center, ClearTextOnFocus=false, Parent=enRow})
-    corner(enBox,5) stroke(enBox,C.Dim,1)
-    enBox:GetPropertyChangedSignal("Text"):Connect(function()
-        if enBox.Text ~= "" then
-            M78.eggName = enBox.Text
-            d.eggName = M78.eggName
-            save()
+local enRow = mk("Frame", {Size=UDim2.new(1,0,0,26), BackgroundColor3=C.Card, BorderSizePixel=0, LayoutOrder=1, Parent=cfgCard})
+corner(enRow,5) stroke(enRow,C.Dim,1)
+lbl(enRow, "Egg Name", 11, C.Gray).Size = UDim2.new(0.4,0,1,0)
+
+local enBtn = btn(enRow, M78.eggName, 11, C.TDim, C.Teal)
+enBtn.Size = UDim2.new(0,120,0,20)
+enBtn.Position = UDim2.new(1,-128,0.5,-10)
+enBtn.TextXAlignment = Enum.TextXAlignment.Center
+corner(enBtn,5) stroke(enBtn,C.Teal,1)
+
+enBtn.MouseButton1Click:Connect(function()
+    local eggNames = getEggNamesFromGitHub()
+    local items = {}
+    for _, name in ipairs(eggNames) do
+        table.insert(items, {
+            value = name,
+            label = name,
+            selected = (name == M78.eggName)
+        })
+    end
+    showPickerModal({
+        title = "Pilih Egg Name (dari GitHub)",
+        items = items,
+        multi = false,
+        onSelect = function(value)
+            if value and value ~= "" then
+                M78.eggName = value
+                d.eggName = value
+                save()
+                enBtn.Text = value
+            end
         end
-    end)
+    })
+end)
 
     -- Egg Count
     local ecRow = mk("Frame", {Size=UDim2.new(1,0,0,26), BackgroundColor3=C.Card, BorderSizePixel=0, LayoutOrder=2, Parent=cfgCard})
