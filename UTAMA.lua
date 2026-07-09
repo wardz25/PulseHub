@@ -3167,6 +3167,230 @@ local function buildAutoGift()
                 })
             end
 
+            local plist={}
+            for _,p in ipairs(Players:GetPlayers()) do
+                if p ~= player and not inHistorySet[p.Name] then table.insert(plist,p.Name) end
+            end
+            table.sort(plist)
+            for _,name in ipairs(plist) do
+                table.insert(items,{value=name,label=name,selected=inTargets(name)})
+            end
+            for _,t in ipairs(slot.targets) do
+                if not inHistorySet[t] and not findPlayerByName(t) then
+                    table.insert(items,{value=t,label=t.." (offline)",selected=true})
+                end
+            end
+            showPickerModal({
+                title="Pilih Target Player (Gift "..slotIdx..") - multi",
+                items=items, multi=true,
+                emptyText="(belum ada player lain di server)",
+                onSelect=function(value, selected)
+                    if not value or value == "" then return end
+                    if selected then
+                        if not inTargets(value) then table.insert(slot.targets, value) end
+                    else
+                        for i=#slot.targets,1,-1 do
+                            if slot.targets[i] == value then table.remove(slot.targets, i) end
+                        end
+                    end
+                    slot.target = slot.targets[1] or ""
+                    trLbl.Text="Target: "..trText()
+                    trStroke.Color=(#slot.targets == 0 and C.Dim or C.Teal)
+                    save()
+                end,
+                onRemove=function(value)
+                    for i=#giftTargetHistory,1,-1 do
+                        if giftTargetHistory[i]==value then
+                            table.remove(giftTargetHistory,i)
+                        end
+                    end
+                    save()
+                end,
+            })
+        end)
+
+        local function countTypes() local n=0 for _ in pairs(slot.petTypes) do n=n+1 end return n end
+        local function countMatching()
+            -- v12.79q: respect kg/age filter biar count match yg keluar di display
+            local n=0 local bp=player:FindFirstChild("Backpack")
+            if bp then for _,it in pairs(bp:GetChildren()) do
+                if isPet(it) and slot.petTypes[getBaseName(getPetName(it))] then
+                    if passKgFilter(it,slot.kg) and passAgeFilter(it,slot.age) then
+                        n=n+1
+                    end
+                end
+            end end
+            return n
+        end
+
+        -- v12.79: Pet Type picker -> modal popup (multi-select)
+        local pickRow=mk("Frame",{Size=UDim2.new(1,0,0,32),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=3,Parent=parent})
+        corner(pickRow,6) local pickStroke=stroke(pickRow,C.Dim,1.1)
+        local pickLbl=lbl(pickRow,"Pilih Jenis Pet ("..countTypes().." = "..countMatching().." pet)",13,C.White)
+        pickLbl.Size=UDim2.new(0.85,0,1,0) pickLbl.Position=UDim2.new(0,10,0,0)
+        local pickIcon=lbl(pickRow,">",14,C.Teal,Enum.TextXAlignment.Right) pickIcon.Size=UDim2.new(0,20,1,0) pickIcon.Position=UDim2.new(1,-24,0,0)
+        local pickCover=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,Parent=pickRow})
+        pickCover.MouseButton1Click:Connect(function()
+            local types={}
+            local bp=player:FindFirstChild("Backpack")
+            if bp then
+                for _,it in pairs(bp:GetChildren()) do
+                    if isPet(it) then
+                        -- v12.79q: respect kg/age filter biar count cocok ama yang ke-gift
+                        if passKgFilter(it,slot.kg) and passAgeFilter(it,slot.age) then
+                            local name=getPetName(it) local base=getBaseName(name)
+                            if not types[base] then types[base]={count=0,mut=0} end
+                            types[base].count=types[base].count+1
+                            if name~=base then types[base].mut=types[base].mut+1 end
+                        end
+                    end
+                end
+            end
+            local sorted={} for b,_ in pairs(types) do table.insert(sorted,b) end
+            table.sort(sorted,function(a,b) return types[a].count>types[b].count end)
+            local items={}
+            for _,base in ipairs(sorted) do
+                local data=types[base]
+                local labelTxt=base.." ("..data.count..(data.mut>0 and ", "..data.mut.." mut" or "")..")"
+                table.insert(items,{value=base,label=labelTxt,selected=(slot.petTypes[base]==true)})
+            end
+            showPickerModal({
+                title="Pilih Jenis Pet (Gift "..slotIdx..", multi)",
+                items=items, multi=true,
+                emptyText="Backpack kosong",
+                onSelect=function(value,isSelected)
+                    if isSelected then slot.petTypes[value]=true else slot.petTypes[value]=nil end
+                    pickLbl.Text="Pilih Jenis Pet ("..countTypes().." = "..countMatching().." pet)"
+                    pickStroke.Color=(countTypes()>0 and C.Teal or C.Dim)
+                    save()
+                end,
+            })
+        end)
+
+        -- v12.79: Mutation Filter picker -> modal popup
+        local function mfText()
+            if slot.mutationFilter == "" then return "(Semua mutasi)" end
+            if slot.mutationFilter == "__nomut__" then return "[TANPA MUTASI]" end
+            return slot.mutationFilter
+        end
+        local mfRow=mk("Frame",{Size=UDim2.new(1,0,0,30),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=5,Parent=parent})
+        corner(mfRow,6) local mfStroke=stroke(mfRow,C.Dim,1.1)
+        local mfLbl=lbl(mfRow,"Mutasi: "..mfText(),13,C.White) mfLbl.Size=UDim2.new(0.85,0,1,0) mfLbl.Position=UDim2.new(0,10,0,0)
+        local mfIcon=lbl(mfRow,">",14,C.Teal,Enum.TextXAlignment.Right) mfIcon.Size=UDim2.new(0,20,1,0) mfIcon.Position=UDim2.new(1,-24,0,0)
+        local mfCover=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,Parent=mfRow})
+        mfCover.MouseButton1Click:Connect(function()
+            local items={
+                {value="",label="(Semua mutasi)",selected=(slot.mutationFilter=="")},
+                {value="__nomut__",label="[TANPA MUTASI]",selected=(slot.mutationFilter=="__nomut__")},
+            }
+            -- v12.79: dedup picker - prefer spaced version untuk multi-word (Christmas Rally > ChristmasRally)
+            local seenNorm = {}
+            local canonicals = {}
+            for _,prefix in ipairs(MUTATION_PREFIXES) do
+                local clean = prefix:gsub("%s+$","")
+                if clean ~= "" then
+                    local norm = clean:gsub("%s+",""):lower()
+                    local idx = seenNorm[norm]
+                    if not idx then
+                        seenNorm[norm] = #canonicals + 1
+                        table.insert(canonicals, clean)
+                    elseif clean:find(" ") and not canonicals[idx]:find(" ") then
+                        canonicals[idx] = clean  -- replace with spaced version
+                    end
+                end
+            end
+            for _, clean in ipairs(canonicals) do
+                table.insert(items,{value=clean,label=clean,selected=(slot.mutationFilter==clean)})
+            end
+            showPickerModal({
+                title="Pilih Mutation Filter (Gift "..slotIdx..")",
+                items=items, multi=false,
+                onSelect=function(value,_)
+                    slot.mutationFilter=value
+                    mfLbl.Text="Mutasi: "..mfText()
+                    mfStroke.Color=(value=="" and C.Dim or C.Teal)
+                    save()
+                end,
+            })
+        end)
+
+        local kgRow=mk("Frame",{Size=UDim2.new(1,0,0,26),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=8,Parent=parent})
+        corner(kgRow,6) stroke(kgRow,C.Dim,1.1)
+        lbl(kgRow,"KG: -N=bawah, N=atas",11,C.Gray).Size=UDim2.new(0.7,0,1,0)
+        local kgBox=mk("TextBox",{Size=UDim2.new(0,60,0,20),Position=UDim2.new(1,-66,0.5,-10),BackgroundColor3=C.Panel,Text=slot.kg,PlaceholderText="-60",PlaceholderColor3=C.Dim,TextColor3=C.White,Font=Enum.Font.GothamBold,TextSize=14,TextScaled=false,TextXAlignment=Enum.TextXAlignment.Center,ClearTextOnFocus=false,Parent=kgRow})
+        corner(kgBox,5) stroke(kgBox,C.Dim,1)
+        kgBox:GetPropertyChangedSignal("Text"):Connect(function()
+            slot.kg=kgBox.Text
+            -- v12.79q: refresh pickLbl count karena filter berubah
+            pickLbl.Text="Pilih Jenis Pet ("..countTypes().." = "..countMatching().." pet)"
+            save()
+        end)
+
+        local ageRow=mk("Frame",{Size=UDim2.new(1,0,0,26),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=7,Parent=parent})
+        corner(ageRow,6) stroke(ageRow,C.Dim,1.1)
+        lbl(ageRow,"Age: -N=bawah, N=atas",11,C.Gray).Size=UDim2.new(0.7,0,1,0)
+        local ageBox=mk("TextBox",{Size=UDim2.new(0,60,0,20),Position=UDim2.new(1,-66,0.5,-10),BackgroundColor3=C.Panel,Text=slot.age,PlaceholderText="-100",PlaceholderColor3=C.Dim,TextColor3=C.White,Font=Enum.Font.GothamBold,TextSize=14,TextScaled=false,TextXAlignment=Enum.TextXAlignment.Center,ClearTextOnFocus=false,Parent=ageRow})
+        corner(ageBox,5) stroke(ageBox,C.Dim,1)
+        ageBox:GetPropertyChangedSignal("Text"):Connect(function()
+            slot.age=ageBox.Text
+            pickLbl.Text="Pilih Jenis Pet ("..countTypes().." = "..countMatching().." pet)"
+            save()
+        end)
+
+        local _,fvTog,fvTS,fvSS=togRow(parent,"Kirim pet di-love juga","Default OFF: skip pet love",9)
+        local function setFv(v) fvTog.Text=v and "ON" or "OFF" fvTog.BackgroundColor3=v and C.TDim or C.Panel fvTog.TextColor3=v and C.Teal or C.Gray fvTS.Color=v and C.Teal or C.Dim fvSS.Color=v and C.Teal or C.Dim end
+        setFv(slot.includeFav)
+        fvTog.MouseButton1Click:Connect(function() slot.includeFav=not slot.includeFav setFv(slot.includeFav) save() end)
+
+        local _,sgTog,sgTS,sgSS=togRow(parent,"Auto Send Gift","Kirim gift otomatis",10)
+        local function setSg(v) sgTog.Text=v and "ON" or "OFF" sgTog.BackgroundColor3=v and C.TDim or C.Panel sgTog.TextColor3=v and C.Teal or C.Gray sgTS.Color=v and C.Teal or C.Dim sgSS.Color=v and C.Teal or C.Dim end
+        setSg(slot.autoSendGift)
+        sgTog.MouseButton1Click:Connect(function() slot.autoSendGift=not slot.autoSendGift setSg(slot.autoSendGift) save() end)
+
+        local _,stTog,stTS,stSS=togRow(parent,"Auto Send Trade","Kirim trade otomatis",11)
+        local function setSt(v) stTog.Text=v and "ON" or "OFF" stTog.BackgroundColor3=v and C.TDim or C.Panel stTog.TextColor3=v and C.Teal or C.Gray stTS.Color=v and C.Teal or C.Dim stSS.Color=v and C.Teal or C.Dim end
+        setSt(slot.autoSendTrade)
+        stTog.MouseButton1Click:Connect(function() slot.autoSendTrade=not slot.autoSendTrade setSt(slot.autoSendTrade) save() end)
+
+        local _,uvTog,uvTS,uvSS=togRow(parent,"Auto Unfav Pet","Auto unlove pet match filter",12)
+        local function setUv(v) uvTog.Text=v and "ON" or "OFF" uvTog.BackgroundColor3=v and C.TDim or C.Panel uvTog.TextColor3=v and C.Teal or C.Gray uvTS.Color=v and C.Teal or C.Dim uvSS.Color=v and C.Teal or C.Dim end
+        setUv(slot.autoUnfav)
+        uvTog.MouseButton1Click:Connect(function() slot.autoUnfav=not slot.autoUnfav setUv(slot.autoUnfav) save() end)
+    end
+
+    for i=1,3 do
+        local content=makeCollapsible("Gift "..i,i*10)
+        buildGiftContent(i,content)
+    end
+
+    local accContent=makeCollapsible("Auto Accept Gift / Trade",50)
+    local _,agTog,agTS,agSS=togRow(accContent,"Auto Accept Gift","Auto terima gift masuk",1)
+    agTog.Text=autoAccGift and "ON" or "OFF" agTog.BackgroundColor3=autoAccGift and C.TDim or C.Panel agTog.TextColor3=autoAccGift and C.Teal or C.Gray agTS.Color=autoAccGift and C.Teal or C.Dim agSS.Color=autoAccGift and C.Teal or C.Dim
+    agTog.MouseButton1Click:Connect(function()
+        autoAccGift=not autoAccGift
+        if autoAccGift then agTog.Text="ON" agTog.BackgroundColor3=C.TDim agTog.TextColor3=C.Teal agTS.Color=C.Teal agSS.Color=C.Teal
+        else agTog.Text="OFF" agTog.BackgroundColor3=C.Panel agTog.TextColor3=C.Gray agTS.Color=C.Dim agSS.Color=C.Dim end
+        save()
+    end)
+
+    local _,atTog,atTS,atSS=togRow(accContent,"Auto Accept Trade","Auto terima trade masuk",2)
+    atTog.Text=autoAccTrade and "ON" or "OFF" atTog.BackgroundColor3=autoAccTrade and C.TDim or C.Panel atTog.TextColor3=autoAccTrade and C.Teal or C.Gray atTS.Color=autoAccTrade and C.Teal or C.Dim atSS.Color=autoAccTrade and C.Teal or C.Dim
+    atTog.MouseButton1Click:Connect(function()
+        autoAccTrade=not autoAccTrade
+        if autoAccTrade then atTog.Text="ON" atTog.BackgroundColor3=C.TDim atTog.TextColor3=C.Teal atTS.Color=C.Teal atSS.Color=C.Teal
+        else atTog.Text="OFF" atTog.BackgroundColor3=C.Panel atTog.TextColor3=C.Gray atTS.Color=C.Dim atSS.Color=C.Dim end
+        save()
+    end)
+
+    sendStatusLbl=lbl(areas[5],"Send: idle",11,C.Gray,Enum.TextXAlignment.Center)
+    sendStatusLbl.Size=UDim2.new(1,0,0,18) sendStatusLbl.LayoutOrder=60 sendStatusLbl.BackgroundColor3=C.Panel sendStatusLbl.BackgroundTransparency=0
+    corner(sendStatusLbl,5) stroke(sendStatusLbl,C.Dim,1)
+
+    accStatusLbl=lbl(areas[5],"Accept: idle",11,C.Gray,Enum.TextXAlignment.Center)
+    accStatusLbl.Size=UDim2.new(1,0,0,18) accStatusLbl.LayoutOrder=61 accStatusLbl.BackgroundColor3=C.Panel accStatusLbl.BackgroundTransparency=0
+    corner(accStatusLbl,5) stroke(accStatusLbl,C.Dim,1)
+end
+
 -- ============================================
 -- TAB 6: AUTO HATCH (terpisah)
 -- ============================================
@@ -3453,7 +3677,7 @@ local function buildHatchTab()
 
     lbl(cfgCard, "Hatch Settings", 11, C.Gold).Size = UDim2.new(1,0,0,14)
 
-    -- Egg Name (TextBox, bisa diganti dengan picker nanti)
+    -- Egg Name
     local enRow = mk("Frame", {Size=UDim2.new(1,0,0,26), BackgroundColor3=C.Card, BorderSizePixel=0, LayoutOrder=1, Parent=cfgCard})
     corner(enRow,5) stroke(enRow,C.Dim,1)
     lbl(enRow, "Egg Name", 11, C.Gray).Size = UDim2.new(0.4,0,1,0)
@@ -3555,230 +3779,6 @@ local function buildHatchTab()
             end)
         end)
     end)
-end
-
-            local plist={}
-            for _,p in ipairs(Players:GetPlayers()) do
-                if p ~= player and not inHistorySet[p.Name] then table.insert(plist,p.Name) end
-            end
-            table.sort(plist)
-            for _,name in ipairs(plist) do
-                table.insert(items,{value=name,label=name,selected=inTargets(name)})
-            end
-            for _,t in ipairs(slot.targets) do
-                if not inHistorySet[t] and not findPlayerByName(t) then
-                    table.insert(items,{value=t,label=t.." (offline)",selected=true})
-                end
-            end
-            showPickerModal({
-                title="Pilih Target Player (Gift "..slotIdx..") - multi",
-                items=items, multi=true,
-                emptyText="(belum ada player lain di server)",
-                onSelect=function(value, selected)
-                    if not value or value == "" then return end
-                    if selected then
-                        if not inTargets(value) then table.insert(slot.targets, value) end
-                    else
-                        for i=#slot.targets,1,-1 do
-                            if slot.targets[i] == value then table.remove(slot.targets, i) end
-                        end
-                    end
-                    slot.target = slot.targets[1] or ""
-                    trLbl.Text="Target: "..trText()
-                    trStroke.Color=(#slot.targets == 0 and C.Dim or C.Teal)
-                    save()
-                end,
-                onRemove=function(value)
-                    for i=#giftTargetHistory,1,-1 do
-                        if giftTargetHistory[i]==value then
-                            table.remove(giftTargetHistory,i)
-                        end
-                    end
-                    save()
-                end,
-            })
-        end)
-
-        local function countTypes() local n=0 for _ in pairs(slot.petTypes) do n=n+1 end return n end
-        local function countMatching()
-            -- v12.79q: respect kg/age filter biar count match yg keluar di display
-            local n=0 local bp=player:FindFirstChild("Backpack")
-            if bp then for _,it in pairs(bp:GetChildren()) do
-                if isPet(it) and slot.petTypes[getBaseName(getPetName(it))] then
-                    if passKgFilter(it,slot.kg) and passAgeFilter(it,slot.age) then
-                        n=n+1
-                    end
-                end
-            end end
-            return n
-        end
-
-        -- v12.79: Pet Type picker -> modal popup (multi-select)
-        local pickRow=mk("Frame",{Size=UDim2.new(1,0,0,32),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=3,Parent=parent})
-        corner(pickRow,6) local pickStroke=stroke(pickRow,C.Dim,1.1)
-        local pickLbl=lbl(pickRow,"Pilih Jenis Pet ("..countTypes().." = "..countMatching().." pet)",13,C.White)
-        pickLbl.Size=UDim2.new(0.85,0,1,0) pickLbl.Position=UDim2.new(0,10,0,0)
-        local pickIcon=lbl(pickRow,">",14,C.Teal,Enum.TextXAlignment.Right) pickIcon.Size=UDim2.new(0,20,1,0) pickIcon.Position=UDim2.new(1,-24,0,0)
-        local pickCover=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,Parent=pickRow})
-        pickCover.MouseButton1Click:Connect(function()
-            local types={}
-            local bp=player:FindFirstChild("Backpack")
-            if bp then
-                for _,it in pairs(bp:GetChildren()) do
-                    if isPet(it) then
-                        -- v12.79q: respect kg/age filter biar count cocok ama yang ke-gift
-                        if passKgFilter(it,slot.kg) and passAgeFilter(it,slot.age) then
-                            local name=getPetName(it) local base=getBaseName(name)
-                            if not types[base] then types[base]={count=0,mut=0} end
-                            types[base].count=types[base].count+1
-                            if name~=base then types[base].mut=types[base].mut+1 end
-                        end
-                    end
-                end
-            end
-            local sorted={} for b,_ in pairs(types) do table.insert(sorted,b) end
-            table.sort(sorted,function(a,b) return types[a].count>types[b].count end)
-            local items={}
-            for _,base in ipairs(sorted) do
-                local data=types[base]
-                local labelTxt=base.." ("..data.count..(data.mut>0 and ", "..data.mut.." mut" or "")..")"
-                table.insert(items,{value=base,label=labelTxt,selected=(slot.petTypes[base]==true)})
-            end
-            showPickerModal({
-                title="Pilih Jenis Pet (Gift "..slotIdx..", multi)",
-                items=items, multi=true,
-                emptyText="Backpack kosong",
-                onSelect=function(value,isSelected)
-                    if isSelected then slot.petTypes[value]=true else slot.petTypes[value]=nil end
-                    pickLbl.Text="Pilih Jenis Pet ("..countTypes().." = "..countMatching().." pet)"
-                    pickStroke.Color=(countTypes()>0 and C.Teal or C.Dim)
-                    save()
-                end,
-            })
-        end)
-
-        -- v12.79: Mutation Filter picker -> modal popup
-        local function mfText()
-            if slot.mutationFilter == "" then return "(Semua mutasi)" end
-            if slot.mutationFilter == "__nomut__" then return "[TANPA MUTASI]" end
-            return slot.mutationFilter
-        end
-        local mfRow=mk("Frame",{Size=UDim2.new(1,0,0,30),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=5,Parent=parent})
-        corner(mfRow,6) local mfStroke=stroke(mfRow,C.Dim,1.1)
-        local mfLbl=lbl(mfRow,"Mutasi: "..mfText(),13,C.White) mfLbl.Size=UDim2.new(0.85,0,1,0) mfLbl.Position=UDim2.new(0,10,0,0)
-        local mfIcon=lbl(mfRow,">",14,C.Teal,Enum.TextXAlignment.Right) mfIcon.Size=UDim2.new(0,20,1,0) mfIcon.Position=UDim2.new(1,-24,0,0)
-        local mfCover=mk("TextButton",{Size=UDim2.new(1,0,1,0),BackgroundTransparency=1,Text="",AutoButtonColor=false,Parent=mfRow})
-        mfCover.MouseButton1Click:Connect(function()
-            local items={
-                {value="",label="(Semua mutasi)",selected=(slot.mutationFilter=="")},
-                {value="__nomut__",label="[TANPA MUTASI]",selected=(slot.mutationFilter=="__nomut__")},
-            }
-            -- v12.79: dedup picker - prefer spaced version untuk multi-word (Christmas Rally > ChristmasRally)
-            local seenNorm = {}
-            local canonicals = {}
-            for _,prefix in ipairs(MUTATION_PREFIXES) do
-                local clean = prefix:gsub("%s+$","")
-                if clean ~= "" then
-                    local norm = clean:gsub("%s+",""):lower()
-                    local idx = seenNorm[norm]
-                    if not idx then
-                        seenNorm[norm] = #canonicals + 1
-                        table.insert(canonicals, clean)
-                    elseif clean:find(" ") and not canonicals[idx]:find(" ") then
-                        canonicals[idx] = clean  -- replace with spaced version
-                    end
-                end
-            end
-            for _, clean in ipairs(canonicals) do
-                table.insert(items,{value=clean,label=clean,selected=(slot.mutationFilter==clean)})
-            end
-            showPickerModal({
-                title="Pilih Mutation Filter (Gift "..slotIdx..")",
-                items=items, multi=false,
-                onSelect=function(value,_)
-                    slot.mutationFilter=value
-                    mfLbl.Text="Mutasi: "..mfText()
-                    mfStroke.Color=(value=="" and C.Dim or C.Teal)
-                    save()
-                end,
-            })
-        end)
-
-        local kgRow=mk("Frame",{Size=UDim2.new(1,0,0,26),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=8,Parent=parent})
-        corner(kgRow,6) stroke(kgRow,C.Dim,1.1)
-        lbl(kgRow,"KG: -N=bawah, N=atas",11,C.Gray).Size=UDim2.new(0.7,0,1,0)
-        local kgBox=mk("TextBox",{Size=UDim2.new(0,60,0,20),Position=UDim2.new(1,-66,0.5,-10),BackgroundColor3=C.Panel,Text=slot.kg,PlaceholderText="-60",PlaceholderColor3=C.Dim,TextColor3=C.White,Font=Enum.Font.GothamBold,TextSize=14,TextScaled=false,TextXAlignment=Enum.TextXAlignment.Center,ClearTextOnFocus=false,Parent=kgRow})
-        corner(kgBox,5) stroke(kgBox,C.Dim,1)
-        kgBox:GetPropertyChangedSignal("Text"):Connect(function()
-            slot.kg=kgBox.Text
-            -- v12.79q: refresh pickLbl count karena filter berubah
-            pickLbl.Text="Pilih Jenis Pet ("..countTypes().." = "..countMatching().." pet)"
-            save()
-        end)
-
-        local ageRow=mk("Frame",{Size=UDim2.new(1,0,0,26),BackgroundColor3=C.Card,BorderSizePixel=0,LayoutOrder=7,Parent=parent})
-        corner(ageRow,6) stroke(ageRow,C.Dim,1.1)
-        lbl(ageRow,"Age: -N=bawah, N=atas",11,C.Gray).Size=UDim2.new(0.7,0,1,0)
-        local ageBox=mk("TextBox",{Size=UDim2.new(0,60,0,20),Position=UDim2.new(1,-66,0.5,-10),BackgroundColor3=C.Panel,Text=slot.age,PlaceholderText="-100",PlaceholderColor3=C.Dim,TextColor3=C.White,Font=Enum.Font.GothamBold,TextSize=14,TextScaled=false,TextXAlignment=Enum.TextXAlignment.Center,ClearTextOnFocus=false,Parent=ageRow})
-        corner(ageBox,5) stroke(ageBox,C.Dim,1)
-        ageBox:GetPropertyChangedSignal("Text"):Connect(function()
-            slot.age=ageBox.Text
-            pickLbl.Text="Pilih Jenis Pet ("..countTypes().." = "..countMatching().." pet)"
-            save()
-        end)
-
-        local _,fvTog,fvTS,fvSS=togRow(parent,"Kirim pet di-love juga","Default OFF: skip pet love",9)
-        local function setFv(v) fvTog.Text=v and "ON" or "OFF" fvTog.BackgroundColor3=v and C.TDim or C.Panel fvTog.TextColor3=v and C.Teal or C.Gray fvTS.Color=v and C.Teal or C.Dim fvSS.Color=v and C.Teal or C.Dim end
-        setFv(slot.includeFav)
-        fvTog.MouseButton1Click:Connect(function() slot.includeFav=not slot.includeFav setFv(slot.includeFav) save() end)
-
-        local _,sgTog,sgTS,sgSS=togRow(parent,"Auto Send Gift","Kirim gift otomatis",10)
-        local function setSg(v) sgTog.Text=v and "ON" or "OFF" sgTog.BackgroundColor3=v and C.TDim or C.Panel sgTog.TextColor3=v and C.Teal or C.Gray sgTS.Color=v and C.Teal or C.Dim sgSS.Color=v and C.Teal or C.Dim end
-        setSg(slot.autoSendGift)
-        sgTog.MouseButton1Click:Connect(function() slot.autoSendGift=not slot.autoSendGift setSg(slot.autoSendGift) save() end)
-
-        local _,stTog,stTS,stSS=togRow(parent,"Auto Send Trade","Kirim trade otomatis",11)
-        local function setSt(v) stTog.Text=v and "ON" or "OFF" stTog.BackgroundColor3=v and C.TDim or C.Panel stTog.TextColor3=v and C.Teal or C.Gray stTS.Color=v and C.Teal or C.Dim stSS.Color=v and C.Teal or C.Dim end
-        setSt(slot.autoSendTrade)
-        stTog.MouseButton1Click:Connect(function() slot.autoSendTrade=not slot.autoSendTrade setSt(slot.autoSendTrade) save() end)
-
-        local _,uvTog,uvTS,uvSS=togRow(parent,"Auto Unfav Pet","Auto unlove pet match filter",12)
-        local function setUv(v) uvTog.Text=v and "ON" or "OFF" uvTog.BackgroundColor3=v and C.TDim or C.Panel uvTog.TextColor3=v and C.Teal or C.Gray uvTS.Color=v and C.Teal or C.Dim uvSS.Color=v and C.Teal or C.Dim end
-        setUv(slot.autoUnfav)
-        uvTog.MouseButton1Click:Connect(function() slot.autoUnfav=not slot.autoUnfav setUv(slot.autoUnfav) save() end)
-    end
-
-    for i=1,3 do
-        local content=makeCollapsible("Gift "..i,i*10)
-        buildGiftContent(i,content)
-    end
-
-    local accContent=makeCollapsible("Auto Accept Gift / Trade",50)
-    local _,agTog,agTS,agSS=togRow(accContent,"Auto Accept Gift","Auto terima gift masuk",1)
-    agTog.Text=autoAccGift and "ON" or "OFF" agTog.BackgroundColor3=autoAccGift and C.TDim or C.Panel agTog.TextColor3=autoAccGift and C.Teal or C.Gray agTS.Color=autoAccGift and C.Teal or C.Dim agSS.Color=autoAccGift and C.Teal or C.Dim
-    agTog.MouseButton1Click:Connect(function()
-        autoAccGift=not autoAccGift
-        if autoAccGift then agTog.Text="ON" agTog.BackgroundColor3=C.TDim agTog.TextColor3=C.Teal agTS.Color=C.Teal agSS.Color=C.Teal
-        else agTog.Text="OFF" agTog.BackgroundColor3=C.Panel agTog.TextColor3=C.Gray agTS.Color=C.Dim agSS.Color=C.Dim end
-        save()
-    end)
-
-    local _,atTog,atTS,atSS=togRow(accContent,"Auto Accept Trade","Auto terima trade masuk",2)
-    atTog.Text=autoAccTrade and "ON" or "OFF" atTog.BackgroundColor3=autoAccTrade and C.TDim or C.Panel atTog.TextColor3=autoAccTrade and C.Teal or C.Gray atTS.Color=autoAccTrade and C.Teal or C.Dim atSS.Color=autoAccTrade and C.Teal or C.Dim
-    atTog.MouseButton1Click:Connect(function()
-        autoAccTrade=not autoAccTrade
-        if autoAccTrade then atTog.Text="ON" atTog.BackgroundColor3=C.TDim atTog.TextColor3=C.Teal atTS.Color=C.Teal atSS.Color=C.Teal
-        else atTog.Text="OFF" atTog.BackgroundColor3=C.Panel atTog.TextColor3=C.Gray atTS.Color=C.Dim atSS.Color=C.Dim end
-        save()
-    end)
-
-    sendStatusLbl=lbl(areas[5],"Send: idle",11,C.Gray,Enum.TextXAlignment.Center)
-    sendStatusLbl.Size=UDim2.new(1,0,0,18) sendStatusLbl.LayoutOrder=60 sendStatusLbl.BackgroundColor3=C.Panel sendStatusLbl.BackgroundTransparency=0
-    corner(sendStatusLbl,5) stroke(sendStatusLbl,C.Dim,1)
-
-    accStatusLbl=lbl(areas[5],"Accept: idle",11,C.Gray,Enum.TextXAlignment.Center)
-    accStatusLbl.Size=UDim2.new(1,0,0,18) accStatusLbl.LayoutOrder=61 accStatusLbl.BackgroundColor3=C.Panel accStatusLbl.BackgroundTransparency=0
-    corner(accStatusLbl,5) stroke(accStatusLbl,C.Dim,1)
 end
 
 buildTimList() buildTargetList() buildSwapList() buildOtherSetting() buildAutoGift()
