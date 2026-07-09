@@ -1,0 +1,1 @@
+loadstring(game:HttpGet("https://raw.githubusercontent.com/wardz25/PulseHub/refs/heads/main/MARKET.lua"))()
